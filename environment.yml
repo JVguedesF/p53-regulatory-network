@@ -1,0 +1,13 @@
+name: p53-regulatory-network
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - python=3.10
+  - fastqc
+  - trim-galore
+  - bowtie2
+  - samtools
+  - picard
+  - macs2
