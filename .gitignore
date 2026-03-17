@@ -228,3 +228,5 @@ data/processed/*
 !data/processed/.gitkeep
 
 .vscode
+data/raw
+data/tsv
