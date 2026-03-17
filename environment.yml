@@ -11,3 +11,8 @@ dependencies:
   - samtools
   - picard
   - macs2
+  - multiqc
+  - matplotlib
+  - seaborn
+  - r-base
+  - r-ggplot2
