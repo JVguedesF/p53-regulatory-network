@@ -9,11 +9,24 @@ dependencies:
   - requests
   - fastqc
   - trim-galore
+  - trimmomatic
   - bowtie2
   - samtools
   - picard
   - macs2
   - multiqc
+  - star
+  - salmon
+  - meme
+  - pandas
+  - numpy
+  - scipy
+  - pybedtools
+  - deeptools
+  - networkx
+  - scikit-learn
+  - xgboost
+  - shap
   - matplotlib
   - seaborn
   - r-base

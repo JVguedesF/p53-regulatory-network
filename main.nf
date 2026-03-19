@@ -19,6 +19,6 @@ process FASTQC {
 }
 
 workflow {
-    read_pairs_ch = Channel.fromFilePairs(params.reads, checkIfExists: true)
+    read_pairs_ch = channel.fromFilePairs(params.reads, checkIfExists: true)
     FASTQC(read_pairs_ch)
 }

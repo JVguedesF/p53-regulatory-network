@@ -230,3 +230,4 @@ data/processed/*
 .vscode
 data/raw
 data/tsv
+logs
