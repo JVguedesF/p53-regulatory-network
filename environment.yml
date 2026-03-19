@@ -4,20 +4,24 @@ channels:
   - bioconda
   - defaults
 dependencies:
+  # Base
   - python=3.10
-  - sys
+  - r-base=4.3
   - requests
+  - tqdm
+  - pytest
+  
+  # ChIP/RNA-seq
   - fastqc
   - trim-galore
-  - trimmomatic
   - bowtie2
+  - star
   - samtools
-  - picard
   - macs2
   - multiqc
-  - star
-  - salmon
   - meme
+  
+  # Data/ML
   - pandas
   - numpy
   - scipy
@@ -29,5 +33,3 @@ dependencies:
   - shap
   - matplotlib
   - seaborn
-  - r-base
-  - r-ggplot2

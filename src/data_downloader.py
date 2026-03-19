@@ -5,6 +5,7 @@ import sys
 import time
 import logging
 import hashlib
+from tqdm import tqdm
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(BASE_DIR)
@@ -81,44 +82,47 @@ class BaseDownloader:
         return True
 
     def _perform_download_and_verify(self, url, dest_path, expected_size, expected_md5):
-        """Streams the file download and applies strict size and MD5 validation with UX feedback."""
-        downloaded_bytes = 0
         file_name = os.path.basename(dest_path)
-        start_time = time.time()
+        initial_pos = os.path.getsize(dest_path) if os.path.exists(dest_path) else 0
+        
+        headers = {}
+        if initial_pos > 0:
+            headers['Range'] = f'bytes={initial_pos}-'
 
-        with requests.get(url, stream=True, timeout=(15, 300)) as r:
-            r.raise_for_status()
-            with open(dest_path, 'wb') as f:
-                for chunk in r.iter_content(chunk_size=1048576):
+        try:
+            response = requests.get(url, headers=headers, stream=True, timeout=30)
+            response.raise_for_status()
+            
+            total_size = int(response.headers.get('content-length', 0)) + initial_pos
+            
+            mode = 'ab' if initial_pos > 0 else 'wb'
+            
+            with open(dest_path, mode) as f, tqdm(
+                desc=file_name,
+                total=total_size,
+                unit='B',
+                unit_scale=True,
+                unit_divisor=1024,
+                initial=initial_pos,
+                ascii=False,
+                miniters=1
+            ) as pbar:
+                for chunk in response.iter_content(chunk_size=1024 * 1024):
                     if chunk:
                         f.write(chunk)
-                        downloaded_bytes += len(chunk)
-                        
-                        elapsed_time = time.time() - start_time
-                        speed = (downloaded_bytes / 1048576) / elapsed_time if elapsed_time > 0 else 0
-                        
-                        if expected_size > 0:
-                            sys.stdout.write(f"\rDownloading {file_name}: {self._format_size(downloaded_bytes)} / {self._format_size(expected_size)} @ {speed:.1f} MB/s")
-                        else:
-                            sys.stdout.write(f"\rDownloading {file_name}: {self._format_size(downloaded_bytes)} / Unknown @ {speed:.1f} MB/s")
-                        sys.stdout.flush()
-        
-        sys.stdout.write("\n")
+                        pbar.update(len(chunk))
+
+        except Exception as e:
+            raise RuntimeError(f"Download failed for {file_name}: {e}")
 
         final_size = os.path.getsize(dest_path)
-        
         if expected_size > 0 and final_size != expected_size:
             raise ValueError(f"Size mismatch: {final_size} != {expected_size}")
 
-        if expected_md5:
-            sys.stdout.write(f"Verifying MD5 checksum for {file_name}... ")
-            sys.stdout.flush()
-            if self.calculate_md5(dest_path) != expected_md5:
-                sys.stdout.write("FAILED!\n")
+        if expected_md5 and self.calculate_md5(dest_path) != expected_md5:
                 raise ValueError("MD5 mismatch.")
-            sys.stdout.write("OK!\n")
 
-        return True
+        return True 
 
     def download_file(self, url, dest_path, expected_size, expected_md5, retries=3):
         """Manages the download cycle, validation, and retries upon failure."""
@@ -134,14 +138,11 @@ class BaseDownloader:
                 return self._perform_download_and_verify(url, dest_path, exp_size, expected_md5)
 
             except Exception as e:
-                if os.path.exists(dest_path):
-                    os.remove(dest_path)
-
                 if attempt == retries - 1:
                     logging.error(f"Failed to download {file_name}: {e}")
                     return False
 
-                time.sleep(2)
+                time.sleep(10)
 
     def process_download_queue(self, tsv_path, output_dir):
         """Reads TSV metadata and queues the download for each validated link."""
@@ -281,8 +282,8 @@ class TcgaDownloader(BaseDownloader):
 
 if __name__ == "__main__":
     descriptions = {
-        "ENCSR000EUN": "p53 ChIP-seq",
         "PRJNA148505": "p53 RNA-seq",
+        "ENCSR000EUN": "p53 ChIP-seq",
         "ENCSR000CPK": "p53 RNA-seq",
         "ENCSR042AWH": "ATAC-seq",
         "ENCSR000EUM": "H3K4me3",
@@ -324,6 +325,7 @@ if __name__ == "__main__":
                 logging.info(f"[{eid}] Downloading {len(data)} file(s)...")
                 downloader.process_download_queue(tsv_path, RAW_DIR)
                 logging.info(f"[{eid}] Done")
+                time.sleep(5)
             else:
                 logging.warning(f"[{eid}] No valid data found.")
 
