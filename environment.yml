@@ -4,9 +4,12 @@ channels:
   - bioconda
   - defaults
 dependencies:
-  # Base
+  # Base & Editor Support
   - python=3.10
   - r-base=4.3
+  - r-languageserver
+  - ipykernel
+  - jupyter
   - requests
   - tqdm
   - pytest
@@ -17,6 +20,7 @@ dependencies:
   - bowtie2
   - star
   - samtools
+  - bedtools
   - macs2
   - multiqc
   - meme
@@ -25,6 +29,7 @@ dependencies:
   - pandas
   - numpy
   - scipy
+  - pysam
   - pybedtools
   - deeptools
   - networkx

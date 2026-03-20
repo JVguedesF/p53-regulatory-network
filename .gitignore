@@ -232,3 +232,4 @@ data/raw
 data/tsv
 logs
 tests
+results/qc

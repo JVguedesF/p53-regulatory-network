@@ -282,13 +282,10 @@ class TcgaDownloader(BaseDownloader):
 
 if __name__ == "__main__":
     descriptions = {
-        "PRJNA148505": "p53 RNA-seq",
         "ENCSR000EUN": "p53 ChIP-seq",
         "ENCSR000CPK": "p53 RNA-seq",
-        "ENCSR042AWH": "ATAC-seq",
         "ENCSR000EUM": "H3K4me3",
-        "ENCSR000EUL": "H3K27ac",
-        "ENCSR000EUK": "H3K27me3"
+        "ENCSR000EUL": "H3K27ac"
     }
 
     target_ids = sys.argv[1:] if len(sys.argv) > 1 else list(descriptions.keys())
