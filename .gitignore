@@ -143,6 +143,7 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+*.py[cod]
 
 # Spyder project settings
 .spyderproject
@@ -222,14 +223,25 @@ __marimo__/
 *.RData
 *.Rhistory
 .Rproj.user
+.Rproj.user/
 data/raw/*
 data/processed/*
 !data/raw/.gitkeep
 !data/processed/.gitkeep
 
-.vscode
-data/raw
-data/tsv
-logs
-tests
-results/qc
+.vscode/
+
+data/
+data/raw/
+data/tsv/
+resources/
+
+pipeline_outputs/
+
+logs/
+
+results/figures/*.png
+results/figures/*.pdf
+results/tables/*.tsv
+
+tests/
