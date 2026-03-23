@@ -25,15 +25,17 @@ die()     { echo -e "${RED}FATAL ERROR:${NC} $*" >&2; exit 1; }
 warn()    { echo -e "${YELLOW}WARNING:${NC} $*" >&2; }
 success() { echo -e "${GREEN}OK${NC} $*"; }
 
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 write_log_header() {
     local mode="$1" id="$2" desc="$3"
     {
+        flock 200
         echo ""
         echo "====================================================================="
         echo "[$(date '+%H:%M:%S')] START ${mode}: ${id} | ${desc}"
         echo "---------------------------------------------------------------------"
-    } >> "$LOG"
+    } 200>>"$LOG"
 }
 move_reports() {
     find "$TRIMMED_OUT" -maxdepth 1 -name "${1}*_trimming_report.txt" \
@@ -58,9 +60,10 @@ trim_se() {
     || { echo "[$(date '+%H:%M:%S')] ERROR in $id" >> "$LOG"; cat "$logtmp" >> "$LOG"; rm -f "$logtmp"; exit 1; }
 
     {
+        flock 200
         cat "$TRIMMED_OUT/${acc}"*_trimming_report.txt 2>/dev/null || true
         echo "[$(date '+%H:%M:%S')] END SE: $id"
-    } >> "$LOG"
+    } 200>>"$LOG"
     move_reports "$acc"
     rm -f "$logtmp"
 }
@@ -87,10 +90,11 @@ trim_pe() {
     || { echo "[$(date '+%H:%M:%S')] ERROR in $id" >> "$LOG"; cat "$logtmp" >> "$LOG"; rm -f "$logtmp"; exit 1; }
 
     {
+        flock 200
         cat "$TRIMMED_OUT/${acc1}"*_trimming_report.txt 2>/dev/null || true
         cat "$TRIMMED_OUT/${acc2}"*_trimming_report.txt 2>/dev/null || true
         echo "[$(date '+%H:%M:%S')] END PE: $id"
-    } >> "$LOG"
+    } 200>>"$LOG"
     move_reports "$acc1"
     move_reports "$acc2"
     rm -f "$logtmp"
