@@ -13,7 +13,8 @@ dependencies:
   - requests
   - tqdm
   - pytest
-  
+  - biopython
+
   # ChIP/RNA-seq
   - fastqc
   - trim-galore
@@ -24,7 +25,7 @@ dependencies:
   - macs2
   - multiqc
   - meme
-  
+
   # Data/ML
   - pandas
   - numpy
@@ -38,3 +39,18 @@ dependencies:
   - shap
   - matplotlib
   - seaborn
+
+  # R — Bioconductor
+  - bioconductor-chipseeker
+  - bioconductor-deseq2
+  - bioconductor-clusterprofiler
+  - bioconductor-txdb.hsapiens.ucsc.hg38.knowngene
+  - bioconductor-org.hs.eg.db
+  - bioconductor-genomicranges
+  - bioconductor-rtracklayer
+  - bioconductor-complexheatmap
+  - bioconductor-tcgabiolinks
+
+  # R — CRAN
+  - r-survminer
+  - r-ggvenndiagram
