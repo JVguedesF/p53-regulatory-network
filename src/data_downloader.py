@@ -1,36 +1,95 @@
+from __future__ import annotations
+
 import csv
-import requests
+import hashlib
+import logging
 import os
 import sys
 import time
-import logging
-import hashlib
+
+import requests
+import yaml
+from pathlib import Path
 from tqdm import tqdm
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_DIR = os.path.dirname(BASE_DIR)
-LOG_DIR = os.path.join(PROJECT_DIR, "logs")
-TSV_DIR = os.path.join(PROJECT_DIR, "data", "tsv")
-RAW_DIR = os.path.join(PROJECT_DIR, "data", "raw")
+from src.resolver import INPUT_KEYWORDS, infer_sample_type, EntrezResolver
 
-for directory in [LOG_DIR, TSV_DIR, RAW_DIR]:
-    os.makedirs(directory, exist_ok=True)
+# ── Config ────────────────────────────────────────────────────────────────────
+_CONFIG_PATH = Path(__file__).parent.parent / "config" / "config.yaml"
 
+def _load_config() -> dict:
+    try:
+        with open(_CONFIG_PATH, encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
+    except FileNotFoundError:
+        logging.warning(f"config.yaml not found at {_CONFIG_PATH}. Using defaults.")
+        return {}
+
+_config  = _load_config()
+_paths   = _config.get("paths", {})
+
+PROJECT_DIR = Path(__file__).parent.parent
+LOG_DIR     = PROJECT_DIR / _paths.get("log_dir",  "logs")
+TSV_DIR     = PROJECT_DIR / _paths.get("tsv_dir",  "data/tsv")
+RAW_DIR     = PROJECT_DIR / _paths.get("raw_dir",  "data/raw")
+
+for _dir in [LOG_DIR, TSV_DIR, RAW_DIR]:
+    _dir.mkdir(parents=True, exist_ok=True)
+
+# ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s | %(levelname)-7s | %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S',
+    format="%(asctime)s | %(levelname)-7s | %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
     handlers=[
-        logging.FileHandler(os.path.join(LOG_DIR, "downloader.log")),
-        logging.StreamHandler(sys.stdout)
-    ]
+        logging.FileHandler(LOG_DIR / "downloader.log"),
+        logging.StreamHandler(sys.stdout),
+    ],
 )
 
+TSV_HEADER = [
+    "Condition",
+    "Accession",
+    "Sample_Type",
+    "Pair_ID",
+    "Paired_End",
+    "Replicate",
+    "Input_Accession",
+    "FASTQ_Path",
+    "Download_Links",
+    "File_Sizes",
+    "MD5_Checksums",
+    "QC_Status",         # scripts/01_qc_trimming.sh
+    "Trimmed_Path",      # scripts/01_qc_trimming.sh
+    "BAM_Path",          # scripts/02_alignment.sh
+    "Alignment_Rate",    # scripts/02_alignment.sh
+    "Peak_File",         # scripts/03_peak_calling.sh (ChIP-seq only)
+    "N_Peaks",           # scripts/03_peak_calling.sh (ChIP-seq only)
+    "Annotated",         # src/chipseeker.R           (ChIP-seq only)
+    "DEG_Status",        # src/deseq2.R               (RNA-seq only)
+]
+
+
+def write_tsv(rows: list[dict], filepath: Path | str) -> None:
+    """Write a list of row dicts to a TSV file using TSV_HEADER column order."""
+    with open(filepath, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=TSV_HEADER, delimiter="\t")
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+# ── Base downloader ───────────────────────────────────────────────────────────
 class BaseDownloader:
     """Shared network and I/O utilities for all downloaders."""
 
-    def request_data(self, url, headers=None):
-        """Executes a GET request and returns a tuple (json_data, None) or (None, error_message)."""
+    def __init__(self, sample_type_overrides: dict[str, str] | None = None) -> None:
+        self.overrides: dict[str, str] = sample_type_overrides or {}
+
+    def fetch(self, experiment_id: str) -> tuple[list[dict], str | None]:
+        """Fetch metadata for a given experiment ID."""
+        raise NotImplementedError("Subclasses must implement the 'fetch' method.")
+
+    def request_data(self, url: str, headers: dict | None = None) -> tuple:
         try:
             response = requests.get(url, headers=headers, timeout=(15, 60))
             response.raise_for_status()
@@ -38,297 +97,334 @@ class BaseDownloader:
         except requests.exceptions.RequestException as e:
             return None, str(e)
         except ValueError as e:
-            return None, f"JSON Decode Error: {str(e)}"
+            return None, f"JSON Decode Error: {e}"
 
-    def save_tsv(self, data, filename):
-        """Saves a list of lists to a TSV file."""
-        with open(filename, 'w', newline='') as f:
-            writer = csv.writer(f, delimiter='\t')
-            writer.writerows(data)
-
-    def calculate_md5(self, file_path):
-        """Reads a file in 1MB chunks and returns its hexadecimal MD5 hash."""
+    def calculate_md5(self, file_path: str) -> str:
         hash_md5 = hashlib.md5()
         with open(file_path, "rb") as f:
             for chunk in iter(lambda: f.read(1048576), b""):
                 hash_md5.update(chunk)
         return hash_md5.hexdigest()
 
-    def _format_size(self, size_in_bytes):
-        """Converts raw bytes into a human-readable string (KB, MB, GB)."""
-        for unit in ['B', 'KB', 'MB', 'GB']:
-            if size_in_bytes < 1024.0:
-                return f"{size_in_bytes:.2f} {unit}"
-            size_in_bytes /= 1024.0
-        return f"{size_in_bytes:.2f} TB"
-
-    def _check_existing_file(self, dest_path, expected_size, expected_md5):
-        """Validates a local file via size (short-circuit) and MD5. Returns a boolean."""
+    def _check_existing_file(self, dest_path: str, expected_size: int, expected_md5: str) -> bool:
         if not os.path.exists(dest_path):
             return False
-
-        local_size = os.path.getsize(dest_path)
-
-        if expected_size > 0 and local_size != expected_size:
+        if expected_size > 0 and os.path.getsize(dest_path) != expected_size:
             os.remove(dest_path)
             return False
-
         if expected_md5:
             if self.calculate_md5(dest_path) == expected_md5:
                 return True
             os.remove(dest_path)
             return False
-
         return True
 
-    def _perform_download_and_verify(self, url, dest_path, expected_size, expected_md5):
-        file_name = os.path.basename(dest_path)
+    def _perform_download_and_verify(
+        self, url: str, dest_path: str, expected_size: int, expected_md5: str
+    ) -> bool:
+        file_name   = os.path.basename(dest_path)
         initial_pos = os.path.getsize(dest_path) if os.path.exists(dest_path) else 0
-        
-        headers = {}
-        if initial_pos > 0:
-            headers['Range'] = f'bytes={initial_pos}-'
+        headers     = {"Range": f"bytes={initial_pos}-"} if initial_pos > 0 else {}
 
-        try:
-            response = requests.get(url, headers=headers, stream=True, timeout=30)
-            response.raise_for_status()
-            
-            total_size = int(response.headers.get('content-length', 0)) + initial_pos
-            
-            mode = 'ab' if initial_pos > 0 else 'wb'
-            
-            with open(dest_path, mode) as f, tqdm(
-                desc=file_name,
-                total=total_size,
-                unit='B',
-                unit_scale=True,
-                unit_divisor=1024,
-                initial=initial_pos,
-                ascii=False,
-                miniters=1
-            ) as pbar:
-                for chunk in response.iter_content(chunk_size=1024 * 1024):
-                    if chunk:
-                        f.write(chunk)
-                        pbar.update(len(chunk))
+        response = requests.get(url, headers=headers, stream=True, timeout=30)
+        response.raise_for_status()
 
-        except Exception as e:
-            raise RuntimeError(f"Download failed for {file_name}: {e}")
+        if initial_pos > 0 and response.status_code == 200:
+            initial_pos = 0
+            open(dest_path, "wb").close()
 
-        final_size = os.path.getsize(dest_path)
-        if expected_size > 0 and final_size != expected_size:
-            raise ValueError(f"Size mismatch: {final_size} != {expected_size}")
+        total_size = int(response.headers.get("content-length", 0)) + initial_pos
 
+        with open(dest_path, "ab" if initial_pos > 0 else "wb") as f, tqdm(
+            desc=file_name, total=total_size, unit="B",
+            unit_scale=True, unit_divisor=1024,
+            initial=initial_pos, ascii=False, miniters=1,
+        ) as pbar:
+            for chunk in response.iter_content(chunk_size=1024 * 1024):
+                if chunk:
+                    f.write(chunk)
+                    pbar.update(len(chunk))
+
+        if expected_size > 0 and os.path.getsize(dest_path) != expected_size:
+            raise ValueError(f"Size mismatch for {file_name}")
         if expected_md5 and self.calculate_md5(dest_path) != expected_md5:
-                raise ValueError("MD5 mismatch.")
+            raise ValueError(f"MD5 mismatch for {file_name}")
+        return True
 
-        return True 
-
-    def download_file(self, url, dest_path, expected_size, expected_md5, retries=3):
-        """Manages the download cycle, validation, and retries upon failure."""
-        exp_size = int(expected_size) if str(expected_size).isdigit() else 0
+    def download_file(
+        self, url: str, dest_path: str, expected_size: str, expected_md5: str, retries: int = 3
+    ) -> bool:
+        exp_size  = int(expected_size) if str(expected_size).isdigit() else 0
         file_name = os.path.basename(dest_path)
 
         for attempt in range(retries):
             try:
                 if self._check_existing_file(dest_path, exp_size, expected_md5):
-                    sys.stdout.write(f"{file_name}: Already downloaded and verified. Skipping.\n")
+                    sys.stdout.write(f"{file_name}: Already verified. Skipping.\n")
                     return True
-
                 return self._perform_download_and_verify(url, dest_path, exp_size, expected_md5)
-
             except Exception as e:
                 if attempt == retries - 1:
                     logging.error(f"Failed to download {file_name}: {e}")
                     return False
-
                 time.sleep(10)
+        return False
 
-    def process_download_queue(self, tsv_path, output_dir):
-        """Reads TSV metadata and queues the download for each validated link."""
-        if not os.path.exists(output_dir):
-            os.makedirs(output_dir)
+    def process_download_queue(self, tsv_path: str, output_dir: str) -> None:
+        """Download all files listed in a metadata TSV using FASTQ_Path as destination."""
+        os.makedirs(output_dir, exist_ok=True)
+        with open(tsv_path) as f:
+            for row in csv.DictReader(f, delimiter="\t"):
+                self.download_file(
+                    row["Download_Links"],
+                    row["FASTQ_Path"],
+                    row["File_Sizes"],
+                    row["MD5_Checksums"],
+                )
 
-        with open(tsv_path, 'r') as f:
-            reader = csv.DictReader(f, delimiter='\t')
-            for row in reader:
-                links = row['Download_Links'].split(';')
-                sizes = row['File_Sizes'].split(';')
-                md5s = row['MD5_Checksums'].split(';')
-                is_paired = row['Paired_End'].upper() == 'TRUE'
+    def _empty_row(self) -> dict[str, str]:
+        return dict.fromkeys(TSV_HEADER, "")
 
-                for i, link in enumerate(links):
-                    suffix = f"_{i+1}" if (is_paired and len(links) > 1) else ""
-                    file_name = f"{row['Accession']}{suffix}.fastq.gz"
-                    full_dest = os.path.join(output_dir, file_name)
 
-                    exp_size = sizes[i] if i < len(sizes) else "0"
-                    exp_md5 = md5s[i] if i < len(md5s) else ""
-
-                    self.download_file(link, full_dest, exp_size, exp_md5)
-
+# ── ENCODE downloader ─────────────────────────────────────────────────────────
 class EncodeDownloader(BaseDownloader):
-    """Implements metadata extraction via the ENCODE Project REST API."""
+    """Fetch metadata from the ENCODE REST API.
 
-    def _extract_fastq_info(self, data, condition):
-        """Filters the ENCODE JSON to retain only released and paired FASTQ files."""
-        extracted = []
+    Sample_Type is resolved from ENCODE's control_type field directly,
+    so Entrez is not needed.
+    """
+
+    def _resolve_sample_type(self, file_data: dict, condition: str) -> str:
+        acc      = file_data.get("accession", "")
+        override = self.overrides.get(acc, "")
+        if file_data.get("control_type"):
+            return override or "Input"
+        target       = file_data.get("target") or {}
+        target_label = target.get("label", "") if isinstance(target, dict) else ""
+        return infer_sample_type(condition + " " + target_label, override)
+
+    def _extract_fastq_info(self, data: dict, condition: str) -> list[dict]:
         base_url = "https://www.encodeproject.org"
-        for file in data.get('files', []):
-            is_fastq = (file.get('file_type') == 'fastq' or file.get('file_format') == 'fastq')
-            if is_fastq and file.get('status') == 'released':
-                rep = file.get('replicate') or {}
-                
-                pair_val = str(file.get('paired_end'))
-                acc = file.get('accession', 'N/A')
-                if pair_val in ['1', '2']:
-                    acc = f"{acc}_{pair_val}"
-                
-                is_paired = pair_val in ['1', '2']
-                
-                extracted.append([
-                    condition,
-                    acc,
-                    is_paired,
-                    str(rep.get('biological_replicate_number', 'N/A')),
-                    base_url + file.get('href', ''),
-                    str(file.get('file_size', '0')),
-                    file.get('md5sum', '')
-                ])
-        return extracted
+        rows: list[dict] = []
 
-    def fetch(self, experiment_id):
-        """Consumes the ENCODE endpoint and returns the standardized metadata."""
-        url = f"https://www.encodeproject.org/experiments/{experiment_id}/?format=json"
-        raw_data, error = self.request_data(url, headers={'accept': 'application/json'})
+        for file in data.get("files", []):
+            is_fastq = file.get("file_type") == "fastq" or file.get("file_format") == "fastq"
+            if not (is_fastq and file.get("status") == "released"):
+                continue
 
-        if error or not isinstance(raw_data, dict):
-            return [], error or "Invalid data received from API"
+            rep       = file.get("replicate") or {}
+            pair_val  = str(file.get("paired_end", ""))
+            acc       = file.get("accession", "N/A")
+            is_paired = pair_val in ("1", "2")
+            acc_key   = f"{acc}_{pair_val}" if is_paired else acc
 
-        assay = raw_data.get('assay_term_name', 'Unknown')
-        target = raw_data.get('target', {}).get('label', '')
-        condition = f"{assay}_{target}".strip('_')
+            row = self._empty_row()
+            row.update({
+                "Condition":      condition,
+                "Accession":      acc_key,
+                "Sample_Type":    self._resolve_sample_type(file, condition),
+                "Pair_ID":        pair_val if is_paired else "",
+                "Paired_End":     str(is_paired),
+                "Replicate":      str(rep.get("biological_replicate_number", "N/A")),
+                "FASTQ_Path":     str(RAW_DIR / f"{acc_key}.fastq.gz"),
+                "Download_Links": base_url + file.get("href", ""),
+                "File_Sizes":     str(file.get("file_size", "0")),
+                "MD5_Checksums":  file.get("md5sum", ""),
+            })
+            rows.append(row)
+        return rows
 
-        parsed_data = self._extract_fastq_info(raw_data, condition)
-        if not parsed_data:
-            return [], "No released FASTQs found"
-        return parsed_data, None
+    def fetch(self, experiment_id: str) -> tuple[list[dict], str | None]:
+        url       = f"https://www.encodeproject.org/experiments/{experiment_id}/?format=json"
+        data, err = self.request_data(url, headers={"accept": "application/json"})
+        if err or not isinstance(data, dict):
+            return [], err or "Invalid response"
 
+        target    = data.get("target") or {}
+        label     = target.get("label", "") if isinstance(target, dict) else ""
+        condition = f"{data.get('assay_term_name', 'Unknown')}_{label}".strip("_")
+
+        rows = self._extract_fastq_info(data, condition)
+        return (rows, None) if rows else ([], "No released FASTQs found")
+
+
+# ── ENA downloader ─────────────────────────────────────────────────────────────
 class EnaDownloader(BaseDownloader):
-    """Implements metadata extraction via the ENA portal, acting as a backend for GEO and SRA."""
+    """Fetch metadata from the ENA portal.
 
-    def _extract_fastq_info(self, data, condition):
-        """Evaluates the priority of FTP links (FASTQ vs SRA) in the ENA API response."""
-        extracted = []
-        if not isinstance(data, list):
+    Sample_Type is resolved via Entrez for each run accession.
+    Each paired-end run produces two rows (one per FASTQ file).
+    """
+
+    def __init__(self, sample_type_overrides: dict[str, str] | None = None) -> None:
+        super().__init__(sample_type_overrides)
+        self._entrez = EntrezResolver()
+
+    def _process_ena_entry(self, entry: dict, condition: str) -> list[dict]:
+        """Processes a single entry from ENA API response and returns corresponding rows."""
+        ftp_raw = entry.get("fastq_ftp", "") or entry.get("sra_ftp", "")
+        if not ftp_raw:
+            run_acc_log = entry.get("run_accession", "N/A")
+            logging.warning(f"[{condition}] No download links for {run_acc_log}. Skipping.")
             return []
-        for file_data in data:
-            layout = file_data.get('library_layout', 'N/A')
 
-            ftp_raw = file_data.get('fastq_ftp', '')
-            bytes_raw = file_data.get('fastq_bytes', '')
-            md5_raw = file_data.get('fastq_md5', '')
+        bytes_raw = entry.get("fastq_bytes", "") or entry.get("sra_bytes", "")
+        md5_raw = entry.get("fastq_md5", "") or entry.get("sra_md5", "")
 
-            if not ftp_raw:
-                ftp_raw = file_data.get('sra_ftp', '')
-                bytes_raw = file_data.get('sra_bytes', '')
-                md5_raw = file_data.get('sra_md5', '')
+        ftp_links = [f"http://{l}" if not l.startswith("http") else l for l in ftp_raw.split(";") if l]
+        sizes = bytes_raw.split(";") if bytes_raw else []
+        md5s = md5_raw.split(";") if md5_raw else []
 
-            ftp_links = [
-                f"http://{link}" if not link.startswith('http') else link
-                for link in ftp_raw.split(';') if link
-            ]
+        run_acc = entry.get("run_accession", "N/A")
+        override = self.overrides.get(run_acc, "")
+        sample_type = self._entrez.resolve(run_acc, override)
+        replicate = entry.get("sample_accession", "N/A")
+        logging.info(f"[Entrez] {run_acc} → {sample_type}")
 
-            extracted.append([
-                condition,
-                file_data.get('run_accession', 'N/A'),
-                True if layout == "PAIRED" else False,
-                file_data.get('sample_accession', 'N/A'),
-                ";".join(ftp_links),
-                bytes_raw,
-                md5_raw
-            ])
-        return extracted
+        is_paired = entry.get("library_layout") == "PAIRED"
+        if is_paired and len(ftp_links) == 2:
+            return self._create_pe_rows(condition, sample_type, run_acc, replicate, ftp_links, sizes, md5s)
 
-    def fetch(self, accession_id):
-        """Consumes the ENA filereport endpoint to request read metadata."""
+        return [self._create_se_row(condition, sample_type, run_acc, replicate, ftp_links, sizes, md5s)]
+
+    def _create_pe_rows(
+        self, condition: str, sample_type: str, run_acc: str, replicate: str,
+        ftp_links: list[str], sizes: list[str], md5s: list[str]
+    ) -> list[dict]:
+        """Creates row data for paired-end reads."""
+        rows = []
+        for i, (link, pair_id) in enumerate(zip(ftp_links, ["1", "2"])):
+            acc_key = f"{run_acc}_{pair_id}"
+            row = self._empty_row()
+            row.update({
+                "Condition":      condition,
+                "Accession":      acc_key,
+                "Sample_Type":    sample_type,
+                "Pair_ID":        pair_id,
+                "Paired_End":     "True",
+                "Replicate":      replicate,
+                "FASTQ_Path":     str(RAW_DIR / f"{acc_key}.fastq.gz"),
+                "Download_Links": link,
+                "File_Sizes":     sizes[i] if i < len(sizes) else "",
+                "MD5_Checksums":  md5s[i] if i < len(md5s) else "",
+            })
+            rows.append(row)
+        return rows
+
+    def _create_se_row(
+        self, condition: str, sample_type: str, run_acc: str, replicate: str,
+        ftp_links: list[str], sizes: list[str], md5s: list[str]
+    ) -> dict:
+        """Creates row data for a single-end read."""
+        row = self._empty_row()
+        row.update({
+            "Condition":      condition,
+            "Accession":      run_acc,
+            "Sample_Type":    sample_type,
+            "Pair_ID":        "",
+            "Paired_End":     "False",
+            "Replicate":      replicate,
+            "FASTQ_Path":     str(RAW_DIR / f"{run_acc}.fastq.gz"),
+            "Download_Links": ftp_links[0] if ftp_links else "",
+            "File_Sizes":     sizes[0] if sizes else "",
+            "MD5_Checksums":  md5s[0] if md5s else "",
+        })
+        return row
+
+    def _extract_fastq_info(self, data: list[dict], condition: str) -> list[dict]:
+        rows: list[dict] = []
+        for entry in data:
+            rows.extend(self._process_ena_entry(entry, condition))
+        return rows
+
+    def fetch(self, experiment_id: str) -> tuple[list[dict], str | None]:
         url = (
             f"https://www.ebi.ac.uk/ena/portal/api/filereport"
-            f"?accession={accession_id}&result=read_run"
+            f"?accession={experiment_id}&result=read_run"
             f"&fields=run_accession,sample_accession,library_layout,"
             f"fastq_ftp,fastq_bytes,fastq_md5,sra_ftp,sra_bytes,sra_md5"
             f"&format=json"
         )
-        raw_data, error = self.request_data(url)
-        if error:
-            return [], error
-        if not raw_data:
+        data, err = self.request_data(url)
+        if err:
+            return [], err
+        if not data:
             return [], "Empty response"
-        return self._extract_fastq_info(raw_data, "ENA_Data"), None
+        return self._extract_fastq_info(data, experiment_id), None
+
 
 class GeoDownloader(EnaDownloader):
     """Download interface for GEO experiments (GSE/PRJ prefixes)."""
-    pass
+
 
 class SraDownloader(EnaDownloader):
     """Download interface for SRA runs (SRR/ERR prefixes)."""
-    pass
+
 
 class TcgaDownloader(BaseDownloader):
-    """Placeholder interface for future integration with the TCGA GDC-Client."""
+    """Placeholder for future TCGA GDC-Client integration."""
 
-    def fetch(self, experiment_id):
-        raise NotImplementedError("TCGA requires GDC-Client.")
+    def fetch(self, experiment_id: str) -> tuple[list[dict], str | None]:
+        raise NotImplementedError("TCGA requires GDC-Client.") from None
 
-if __name__ == "__main__":
-    descriptions = {
-        "ENCSR000EUN": "p53 ChIP-seq",
-        "ENCSR000CPK": "p53 RNA-seq",
-        "ENCSR000EUM": "H3K4me3",
-        "ENCSR000EUL": "H3K27ac"
-    }
 
-    target_ids = sys.argv[1:] if len(sys.argv) > 1 else list(descriptions.keys())
+DOWNLOADER_REGISTRY: dict[str, type[BaseDownloader]] = {
+    "ENC": EncodeDownloader,
+    "GSE": GeoDownloader,
+    "PRJ": GeoDownloader,
+    "SRR": SraDownloader,
+    "ERR": SraDownloader,
+    "TCG": TcgaDownloader,
+}
 
-    downloaders_map = {
-        "ENC": EncodeDownloader, "GSE": GeoDownloader, "PRJ": GeoDownloader,
-        "SRR": SraDownloader, "ERR": SraDownloader, "TCG": TcgaDownloader
-    }
+
+# ── Entry point ───────────────────────────────────────────────────────────────
+def main(target_ids: list[str] | None = None) -> None:
+    """Run the download pipeline for the given experiment IDs.
+
+    If target_ids is None, all experiments in config.yaml are processed.
+    """
+    experiments: dict = _config.get("downloads", {})
+    ids = target_ids or list(experiments.keys())
 
     logging.info("Starting processing")
 
-    for eid in target_ids:
-        prefix = eid[:3].upper()
-        downloader_class = downloaders_map.get(prefix)
-
+    for eid in ids:
+        downloader_class = DOWNLOADER_REGISTRY.get(eid[:3].upper())
         if not downloader_class:
             logging.warning(f"[SKIP] {eid}: Unknown prefix.")
             continue
 
-        try:
-            downloader = downloader_class()
-            data, err = downloader.fetch(eid)
+        exp_info  = experiments.get(eid, {})
+        overrides = exp_info.get("overrides", {})
 
-            if err:
-                logging.error(f"[{eid}] Error: {err}")
+        try:
+            downloader  = downloader_class(sample_type_overrides=overrides)
+            rows, error = downloader.fetch(eid)
+
+            if error:
+                logging.error(f"[{eid}] {error}")
+                continue
+            if not rows:
+                logging.warning(f"[{eid}] No valid data found.")
                 continue
 
-            if data:
-                tsv_path = os.path.join(TSV_DIR, f"{eid}_metadata.tsv")
-                header = [['Condition', 'Accession', 'Paired_End', 'Replicate',
-                           'Download_Links', 'File_Sizes', 'MD5_Checksums']]
-                downloader.save_tsv(header + data, tsv_path)
+            tsv_path = TSV_DIR / f"{eid}_metadata.tsv"
+            write_tsv(rows, tsv_path)
+            logging.info(f"[{eid}] TSV → {tsv_path} ({len(rows)} rows)")
 
-                logging.info(f"[{eid}] Downloading {len(data)} file(s)...")
-                downloader.process_download_queue(tsv_path, RAW_DIR)
-                logging.info(f"[{eid}] Done")
-                time.sleep(5)
-            else:
-                logging.warning(f"[{eid}] No valid data found.")
+            logging.info(f"[{eid}] Downloading {len(rows)} file(s)...")
+            downloader.process_download_queue(str(tsv_path), str(RAW_DIR))
+            logging.info(f"[{eid}] Done")
+            time.sleep(5)
 
-        except NotImplementedError as nie:
-            logging.warning(f"[{eid}] Warning: {nie}")
+        except NotImplementedError as e:
+            logging.warning(f"[{eid}] {e}")
         except Exception as e:
             logging.critical(f"[{eid}] Critical failure: {e}")
 
     logging.info("Processing complete")
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:] or None)

@@ -225,9 +225,11 @@ __marimo__/
 .Rproj.user
 .Rproj.user/
 data/raw/*
+data/genome
 data/processed/*
 !data/raw/.gitkeep
 !data/processed/.gitkeep
+!data/genome .gitkeep
 
 .vscode/
 
