@@ -3,7 +3,11 @@ set -euo pipefail
 shopt -s nullglob
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$(dirname "$SCRIPT_DIR")"
+if [[ -f "${SCRIPT_DIR}/config/config.yaml" ]]; then
+    cd "$SCRIPT_DIR"
+else
+    cd "$(dirname "$SCRIPT_DIR")"
+fi
 
 (( BASH_VERSINFO[0] >= 4 )) || { echo "Bash 4+ required (found $BASH_VERSION)" >&2; exit 1; }
 
@@ -11,12 +15,10 @@ TSV_DIR="data/tsv"
 OUT_DIR="pipeline_outputs"
 LOG_DIR="logs"
 TARGET="hg38"
-GENOME_FASTA="data/genome/fasta/genome_${TARGET}.fasta"
+GENOME_FASTA="data/genome/fasta/${TARGET}.fa"
 INDEX="data/genome/index/bowtie2/genome_index_${TARGET}"
-THREADS=1
-CORES=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
-MAX_JOBS=$(( CORES / THREADS ))
-[[ $MAX_JOBS -lt 1 ]] && MAX_JOBS=1
+THREADS=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+MAX_JOBS=1
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 
