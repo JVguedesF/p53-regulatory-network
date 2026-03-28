@@ -30,7 +30,7 @@ write_log_header() {
       printf '\n%s\n' '====================================================================='
       echo "[$(date '+%H:%M:%S')] START ${mode}: ${id} | ${desc}"
       printf '%s\n' '---------------------------------------------------------------------'
-    } 200>>"$LOG"
+    } >>"$LOG" 200>>"$LOG"
 }
 
 move_reports() {
@@ -50,15 +50,14 @@ trim_se() {
     log "SE trimming: $id"; write_log_header "SE" "$id" "$(basename "$fastq")"
 
     local tmp; tmp=$(mktemp)
-    trim_galore --quality "$TRIM_QUALITY" --output_dir "$TRIMMED_OUT" "$fastq" \
-        >>"$LOG" 2>"$tmp" \
-    || { echo "[$(date '+%H:%M:%S')] ERROR $id" >>"$LOG"; cat "$tmp" >>"$LOG"
-         rm -f "$tmp"; exit 1; }
+    trim_galore --quality "$TRIM_QUALITY" --output_dir "$TRIMMED_OUT" "$fastq" >"$tmp" 2>&1 \
+    || { echo "[$(date '+%H:%M:%S')] ERROR $id" >>"$LOG"; cat "$tmp" >>"$LOG"; rm -f "$tmp"; exit 1; }
 
     { flock 200
+      cat "$tmp"
       cat "$TRIMMED_OUT/${acc}"*_trimming_report.txt 2>/dev/null || true
       echo "[$(date '+%H:%M:%S')] END SE: $id"
-    } 200>>"$LOG"
+    } >>"$LOG" 200>>"$LOG"
 
     move_reports "$acc"; rm -f "$tmp"
     tsv_update "$tsv" "$acc" "QC_Status=PASS" "Trimmed_Path=$trimmed"
@@ -79,16 +78,15 @@ trim_pe() {
     write_log_header "PE" "$id" "$(basename "$r1") + $(basename "$r2")"
 
     local tmp; tmp=$(mktemp)
-    trim_galore --paired --quality "$TRIM_QUALITY" --output_dir "$TRIMMED_OUT" "$r1" "$r2" \
-        >>"$LOG" 2>"$tmp" \
-    || { echo "[$(date '+%H:%M:%S')] ERROR $id" >>"$LOG"; cat "$tmp" >>"$LOG"
-         rm -f "$tmp"; exit 1; }
+    trim_galore --paired --quality "$TRIM_QUALITY" --output_dir "$TRIMMED_OUT" "$r1" "$r2" >"$tmp" 2>&1 \
+    || { echo "[$(date '+%H:%M:%S')] ERROR $id" >>"$LOG"; cat "$tmp" >>"$LOG"; rm -f "$tmp"; exit 1; }
 
     { flock 200
+      cat "$tmp"
       cat "$TRIMMED_OUT/${acc1}"*_trimming_report.txt 2>/dev/null || true
       cat "$TRIMMED_OUT/${acc2}"*_trimming_report.txt 2>/dev/null || true
       echo "[$(date '+%H:%M:%S')] END PE: $id"
-    } 200>>"$LOG"
+    } >>"$LOG" 200>>"$LOG"
 
     move_reports "$acc1"; move_reports "$acc2"; rm -f "$tmp"
     tsv_update "$tsv" "$acc1" "QC_Status=PASS" "Trimmed_Path=$out1"
