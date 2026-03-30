@@ -14,6 +14,8 @@ macs2 callpeak \
   -g hs \
   -n test_p53 \
   --call-summits \
+  --nomodel \
+  --extsize 200 \
   -q 0.1 \
   --outdir "$OUT_DIR"
 
