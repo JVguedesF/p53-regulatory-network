@@ -5,7 +5,7 @@ shopt -s nullglob
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$(dirname "$SCRIPT_DIR")"
 
-(( BASH_VERSINFO[0] >= 4 )) || { echo "Bash 4+ required (found $BASH_VERSION)" >&2; exit 1; }
+(( BASH_VERSINFO[0] >= 4 )) || { echo "Bash 4+ required" >&2; exit 1; }
 
 TSV_FILE="${1:-}"
 OUT_DIR="pipeline_outputs/test_peaks"
@@ -26,59 +26,56 @@ while IFS=$'\x01' read -r _cond acc sample_type _pair _pe _rep \
     esac
 done < <(tail -n +2 "$TSV_FILE" | tr $'\t' $'\x01')
 
-chip_bam=""
-input_bam=""
-sample_id=""
+mkdir -p "$OUT_DIR"
 
 while IFS=$'\x01' read -r cond acc sample_type _pair _pe rep \
                              input_acc _fastq _dl _sz _md5 \
                              _qc _trimmed bam_path _rest; do
+    
     [[ -z "$acc" || -z "$sample_type" ]] && continue
     [[ "${sample_type,,}" == "ip" ]] || continue
 
-    [[ -f "$bam_path" ]] \
-        || { echo "BAM not found for $acc: '$bam_path'" >&2; exit 1; }
+    [[ -f "$bam_path" ]] || { echo "BAM not found for $acc: $bam_path" >&2; exit 1; }
+    [[ -n "$input_acc" ]] || { echo "Input_Accession empty for IP $acc" >&2; exit 1; }
 
-    [[ -n "$input_acc" ]] \
-        || { echo "Input_Accession is empty for IP $acc" >&2; exit 1; }
+    input_bam="${bam_of_acc[$input_acc]:-}"
+    [[ -n "$input_bam" ]] || { echo "Input $input_acc not found in TSV" >&2; exit 1; }
+    [[ -f "$input_bam" ]] || { echo "Input BAM not found: $input_bam" >&2; exit 1; }
 
-    resolved_input="${bam_of_acc[$input_acc]:-}"
-    [[ -n "$resolved_input" ]] \
-        || { echo "Accession '$input_acc' not found in TSV." >&2; exit 1; }
-    [[ -f "$resolved_input" ]] \
-        || { echo "Input BAM not found: '$resolved_input'" >&2; exit 1; }
-
-    chip_bam="$bam_path"
-    input_bam="$resolved_input"
     sample_id="${cond}_Rep${rep}_${acc}"
-    break
+    peak_file="$OUT_DIR/${sample_id}_peaks.narrowPeak"
+
+    if [[ -s "$peak_file" ]]; then
+        echo "Skipping $sample_id"
+        continue
+    fi
+
+    echo "Calling peaks: $sample_id"
+
+    macs2 callpeak \
+        -t "$bam_path" \
+        -c "$input_bam" \
+        -f BAM \
+        -g "$GENOME_SIZE" \
+        -n "$sample_id" \
+        --call-summits \
+        --nomodel \
+        --extsize 200 \
+        -q "$Q_VALUE" \
+        --outdir "$OUT_DIR"
+
+    if [[ -f "$peak_file" ]]; then
+        n_peaks=$(wc -l < "$peak_file")
+        n_peaks=$(echo "$n_peaks" | xargs)
+        
+        flock -x "${TSV_FILE}.lock" python src/tsv_updater.py "$TSV_FILE" "$acc" "Peak_File=$peak_file" "N_Peaks=$n_peaks"
+        
+        echo "Done $sample_id: $n_peaks peaks"
+    else
+        echo "Error MACS2 $sample_id" >&2
+        exit 1
+    fi
+
 done < <(tail -n +2 "$TSV_FILE" | tr $'\t' $'\x01')
 
-[[ -n "$chip_bam" ]] || { echo "No IP rows found in $TSV_FILE." >&2; exit 1; }
-
-echo "Sample : $sample_id"
-echo "ChIP   : $chip_bam"
-echo "Input  : $input_bam"
-
-mkdir -p "$OUT_DIR"
-
-macs2 callpeak \
-    -t "$chip_bam" \
-    -c "$input_bam" \
-    -f BAM \
-    -g "$GENOME_SIZE" \
-    -n "$sample_id" \
-    --call-summits \
-    --nomodel \
-    --extsize 200 \
-    -q "$Q_VALUE" \
-    --outdir "$OUT_DIR"
-
-echo "=== files generated ==="
-ls -lh "$OUT_DIR"
-
-echo "=== peak count ==="
-wc -l "$OUT_DIR/${sample_id}_peaks.narrowPeak"
-
-echo "=== first lines ==="
-head -3 "$OUT_DIR/${sample_id}_peaks.narrowPeak"
+echo "Finished"
