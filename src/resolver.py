@@ -9,7 +9,7 @@ from Bio import Entrez
 
 Entrez.email = os.environ.get("NCBI_EMAIL", "your-email@example.com")
 
-INPUT_KEYWORDS = frozenset({"input", "control", "igg", "mock"})
+INPUT_KEYWORDS = frozenset({"input", "control", "igg", "mock", "wce"})
 RNA_KEYWORDS   = frozenset({"rna-seq", "rnaseq", "polya", "poly-a", "mrna"})
 
 _cache: dict[str, str] = {}
@@ -42,10 +42,7 @@ def _query_entrez(run_accession: str) -> str:
 
         ids = list(data.get("IdList", [])) if isinstance(data, dict) else []
         if not ids:
-            logging.warning(
-                f"[Entrez] No record for {run_accession} "
-                "— using fallback."
-            )
+            logging.warning(f"[Entrez] No record for {run_accession} — using fallback.")
             return infer_sample_type(run_accession)
 
         handle  = Entrez.efetch(db="sra", id=ids[0], rettype="full", retmode="xml")
@@ -57,10 +54,7 @@ def _query_entrez(run_accession: str) -> str:
         return _parse_xml(xml_str, run_accession)
 
     except Exception as exc:
-        logging.warning(
-            f"[Entrez] Query failed for {run_accession}: {exc} "
-            "— using fallback."
-        )
+        logging.warning(f"[Entrez] Query failed for {run_accession}: {exc} — using fallback.")
         return infer_sample_type(run_accession)
 
 
@@ -70,6 +64,13 @@ def _is_input_chip(root: ET.Element) -> bool:
         val = (attr.findtext("VALUE") or "").lower()
         if any(kw in tag or kw in val for kw in INPUT_KEYWORDS):
             return True
+
+    for field in ("TITLE", "LIBRARY_NAME", "DESIGN_DESCRIPTION", "SAMPLE_NAME"):
+        for el in root.iter(field):
+            text = (el.text or "").lower()
+            if any(kw in text for kw in INPUT_KEYWORDS):
+                return True
+
     return False
 
 
@@ -86,14 +87,9 @@ def _parse_xml(xml_str: str, run_accession: str) -> str:
             if strategy == "ChIP-Seq":
                 return "Input" if _is_input_chip(root) else "IP"
 
-        logging.warning(
-            f"[Entrez] Ambiguous XML for {run_accession} "
-            "— using fallback."
-        )
+        logging.warning(f"[Entrez] Ambiguous XML for {run_accession} — using fallback.")
         return infer_sample_type(run_accession)
 
     except ET.ParseError as exc:
-        logging.warning(
-            f"[Entrez] XML parse error for {run_accession}: {exc}"
-        )
+        logging.warning(f"[Entrez] XML parse error for {run_accession}: {exc}")
         return infer_sample_type(run_accession)
