@@ -48,7 +48,10 @@ align_se() {
     local report="${ALIGN_REPORTS}/${safe_id}_${acc}_report.txt"
 
     if [[ -f "$bam" ]] && samtools quickcheck "$bam" 2>/dev/null; then
-        log "Skipping SE: $id — intact."; return 0
+        log "Skipping SE: $id — intact."
+        local rate; rate=$(grep "overall alignment rate" "$report" 2>/dev/null | grep -oP '[0-9.]+(?=%)' || echo "N/A")
+        tsv_update "$tsv" "$acc" "BAM_Path=$bam" "Alignment_Rate=${rate}%"
+        return 0
     fi
     log "SE alignment: $id"; write_log_header "ALIGN_SE" "$id" "$(basename "$trimmed")"
 
@@ -79,7 +82,11 @@ align_pe() {
     local report="${ALIGN_REPORTS}/${safe_id}_${acc_base}_report.txt"
 
     if [[ -f "$bam" ]] && samtools quickcheck "$bam" 2>/dev/null; then
-        log "Skipping PE: $id — intact."; return 0
+        log "Skipping PE: $id — intact."
+        local rate; rate=$(grep "overall alignment rate" "$report" 2>/dev/null | grep -oP '[0-9.]+(?=%)' || echo "N/A")
+        tsv_update "$tsv" "$acc1" "BAM_Path=$bam" "Alignment_Rate=${rate}%"
+        tsv_update "$tsv" "$acc2" "BAM_Path=$bam" "Alignment_Rate=${rate}%"
+        return 0
     fi
     log "PE alignment: $id"; write_log_header "ALIGN_PE" "$id" "${acc_base} (paired)"
 
@@ -157,7 +164,7 @@ for TSV_FILE in "${TSV_FILES[@]}"; do
         [[ -f "$trimmed_path" ]] \
             || die "Line $line_num: Trimmed_Path not found → '$trimmed_path' (run 02 first?)"
 
-        group="${cond}_Rep${rep}"
+        group="${cond}_${sample_type}_Rep${rep}"
         if [[ "${paired_end,,}" == "true" ]]; then
             case "$pair_id" in
                 1) pe_r1["$group"]="$trimmed_path"; pe_acc1["$group"]="$acc"

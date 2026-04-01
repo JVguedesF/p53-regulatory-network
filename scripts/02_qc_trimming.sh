@@ -43,7 +43,9 @@ trim_se() {
     local trimmed="${TRIMMED_OUT}/${acc}_trimmed.fq.gz"
 
     if [[ -f "$trimmed" ]] && gzip -t "$trimmed" 2>/dev/null; then
-        log "Skipping SE: $id — intact."; return 0
+        log "Skipping SE: $id — intact."
+        tsv_update "$tsv" "$acc" "QC_Status=PASS" "Trimmed_Path=$trimmed"
+        return 0
     fi
     [[ -f "$trimmed" ]] && warn "$trimmed corrupt — reprocessing."
 
@@ -69,8 +71,11 @@ trim_pe() {
     local out2="${TRIMMED_OUT}/${acc2}_val_2.fq.gz"
 
     if [[ -f "$out1" && -f "$out2" ]] \
-       && gzip -t "$out1" 2>/dev/null && gzip -t "$out2" 2>/dev/null; then
-        log "Skipping PE: $id — intact."; return 0
+        && gzip -t "$out1" 2>/dev/null && gzip -t "$out2" 2>/dev/null; then
+        log "Skipping PE: $id — intact."
+        tsv_update "$tsv" "$acc1" "QC_Status=PASS" "Trimmed_Path=$out1"
+        tsv_update "$tsv" "$acc2" "QC_Status=PASS" "Trimmed_Path=$out2"
+        return 0
     fi
     [[ -f "$out1" || -f "$out2" ]] && warn "Partial output for $id — reprocessing."
 
@@ -134,7 +139,7 @@ for TSV_FILE in "${TSV_FILES[@]}"; do
             [[ -f "$fastq_path" ]] || die "Line $line_num: FASTQ not found → $fastq_path"
             s_raw_fastq+=("$fastq_path")
 
-            group="${cond}_Rep${rep}"
+            group="${cond}_${sample_type}_Rep${rep}"
             if [[ "${paired_end,,}" == "true" ]]; then
                 case "$pair_id" in
                     1) pe_r1["$group"]="$fastq_path"; pe_acc1["$group"]="$acc" ;;
