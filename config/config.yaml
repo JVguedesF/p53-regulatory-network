@@ -1,17 +1,13 @@
-genome:
-  target: hg38
-  release: current
-  out_dir: data/genome/fasta
-
-paths:
-  raw_dir: data/raw
-  tsv_dir: data/tsv
-  log_dir: logs
-  pipeline_outputs: pipeline_outputs
-
 downloads:
-  PRJNA203357:
-    description: "p53 ChIP-seq + RNA-seq (MCF-7, Nutlin-3a)"
+  PRJNA203360:
+    description: "p53 ChIP-seq MCF7 (Nutlin-3a)"
+    overrides:
+      SRR856298: "Input"
+      SRR856299: "Input"
+      SRR866627: "IP"
+
+  PRJNA203359:
+    description: "RNA-seq MCF7 (Nutlin-3a)"
     overrides: {}
 
   ENCSR000DWJ:

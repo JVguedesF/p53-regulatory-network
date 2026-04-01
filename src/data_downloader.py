@@ -165,6 +165,7 @@ class BaseDownloader:
     def _empty_row(self) -> dict[str, str]:
         return dict.fromkeys(TSV_HEADER, "")
 
+
 class EncodeDownloader(BaseDownloader):
     def _resolve_sample_type(self, file_data: dict, condition: str) -> str:
         acc = file_data.get("accession", "")
@@ -174,6 +175,33 @@ class EncodeDownloader(BaseDownloader):
         target = file_data.get("target") or {}
         target_label = target.get("label", "") if isinstance(target, dict) else ""
         return infer_sample_type(condition + " " + target_label, override)
+
+    def _control_files_by_replicate(self, ctrl_id: str) -> dict[str, str]:
+        url = f"https://www.encodeproject.org/experiments/{ctrl_id}/?format=json"
+        data, err = self.request_data(url, headers={"accept": "application/json"})
+        if err or not isinstance(data, dict):
+            logging.warning(f"[ENCODE] Could not fetch control {ctrl_id}: {err}")
+            return {}
+
+        result: dict[str, str] = {}
+        for file in data.get("files", []):
+            is_fastq = file.get("file_format") == "fastq" or file.get("file_type") == "fastq"
+            if not (is_fastq and file.get("status") == "released"):
+                continue
+            rep     = file.get("replicate") or {}
+            rep_num = str(rep.get("biological_replicate_number", ""))
+            acc     = file.get("accession", "")
+            pair    = str(file.get("paired_end", ""))
+            acc_key = f"{acc}_{pair}" if pair in ("1", "2") else acc
+            if rep_num and acc_key:
+                result.setdefault(rep_num, acc_key)
+        return result
+
+    def _fetch_control_acc_by_replicate(self, control_experiment_ids: list[str]) -> dict[str, str]:
+        result: dict[str, str] = {}
+        for ctrl_id in control_experiment_ids:
+            result.update(self._control_files_by_replicate(ctrl_id))
+        return result
 
     def _extract_fastq_rows(self, data: dict, condition: str) -> list[dict]:
         base_url = "https://www.encodeproject.org"
@@ -206,18 +234,37 @@ class EncodeDownloader(BaseDownloader):
             rows.append(row)
         return rows
 
+    def _link_ip_to_controls(self, rows: list[dict], controls: list) -> None:
+        ctrl_ids = [
+            c.get("accession", "") for c in controls
+            if isinstance(c, dict) and c.get("accession")
+        ]
+        if not ctrl_ids:
+            return
+        control_map = self._fetch_control_acc_by_replicate(ctrl_ids)
+        for row in rows:
+            if row["Sample_Type"] == "IP":
+                row["Input_Accession"] = control_map.get(row["Replicate"], "")
+
     def fetch(self, experiment_id: str) -> tuple[list[dict], str | None]:
         url = f"https://www.encodeproject.org/experiments/{experiment_id}/?format=json"
         data, err = self.request_data(url, headers={"accept": "application/json"})
         if err or not isinstance(data, dict):
             return [], err or "Resposta inválida"
 
-        target = data.get("target") or {}
-        label = target.get("label", "") if isinstance(target, dict) else ""
+        target    = data.get("target") or {}
+        label     = target.get("label", "") if isinstance(target, dict) else ""
         condition = f"{data.get('assay_term_name', 'Unknown')}_{label}".strip("_")
 
         rows = self._extract_fastq_rows(data, condition)
-        return (rows, None) if rows else ([], "Nenhum FASTQ liberado encontrado")
+        if not rows:
+            return [], "Nenhum FASTQ liberado encontrado"
+
+        controls = data.get("possible_controls", [])
+        if controls:
+            self._link_ip_to_controls(rows, controls)
+
+        return rows, None
 
 
 class EnaDownloader(BaseDownloader):
@@ -281,6 +328,25 @@ class EnaDownloader(BaseDownloader):
         })
         return row
 
+    def _link_input_accessions(self, rows: list[dict]) -> None:
+        input_rows = [r for r in rows if r["Sample_Type"] == "Input"]
+        if not input_rows:
+            logging.warning("[ENA] No Input rows found — Input_Accession will remain empty.")
+            return
+
+        if len(input_rows) == 1:
+            input_acc = input_rows[0]["Accession"]
+            for row in rows:
+                if row["Sample_Type"] == "IP":
+                    row["Input_Accession"] = input_acc
+            return
+
+        input_by_replicate = {r["Replicate"]: r["Accession"] for r in input_rows}
+        fallback = input_rows[0]["Accession"]
+        for row in rows:
+            if row["Sample_Type"] == "IP":
+                row["Input_Accession"] = input_by_replicate.get(row["Replicate"], fallback)
+
     def fetch(self, experiment_id: str) -> tuple[list[dict], str | None]:
         url = (
             f"https://www.ebi.ac.uk/ena/portal/api/filereport"
@@ -298,7 +364,13 @@ class EnaDownloader(BaseDownloader):
         rows: list[dict] = []
         for entry in data:
             rows.extend(self._process_entry(entry, experiment_id))
-        return (rows, None) if rows else ([], "Nenhuma entrada válida encontrada")
+
+        if not rows:
+            return [], "Nenhuma entrada válida encontrada"
+
+        self._link_input_accessions(rows)
+        return rows, None
+
 
 DOWNLOADER_REGISTRY: dict[str, type[BaseDownloader]] = {
     "ENC": EncodeDownloader,
@@ -311,7 +383,7 @@ DOWNLOADER_REGISTRY: dict[str, type[BaseDownloader]] = {
 def main(target_ids: list[str] | None = None) -> None:
     project_dir = Path(__file__).parent.parent
     config_path = project_dir / "config" / "config.yaml"
-    
+
     config = load_config(config_path)
     tsv_dir, raw_dir = setup_environment(project_dir, config)
 
