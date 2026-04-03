@@ -102,9 +102,9 @@ for TSV_FILE in "${TSV_FILES[@]}"; do
     [[ -f "$TSV_FILE" ]] || { warn "$TSV_FILE not found — skipping."; continue; }
     TSV_BASE="${TSV_FILE##*/}"; TSV_BASE="${TSV_BASE%.tsv}"
 
-    PEAKS_BASE="${OUT_DIR}/chipseq/${TSV_BASE}/04_peaks"
-    LOG="${OUT_DIR}/chipseq/${TSV_BASE}/logs/peak_calling.log"
-    mkdir -p "$PEAKS_BASE" "$(dirname "$LOG")"
+    PEAKS_BASE="${OUT_DIR}/chipseq/${TSV_BASE}/05_peaks"
+    LOG="logs/chipseq/${TSV_BASE}_peak_calling.log"
+    mkdir -p "$PEAKS_BASE" "logs/chipseq"
 
     log "Processing: $TSV_FILE"
 
