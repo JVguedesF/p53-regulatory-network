@@ -1,16 +1,27 @@
-FROM continuumio/miniconda3:latest
+FROM mambaorg/micromamba:1.5.8-debian12-slim
 
-LABEL maintainer="João Vitor"
-LABEL description="Pipeline p53-regulatory-network"
+LABEL maintainer="João Vitor Guedes"
+LABEL description="p53-regulatory-network pipeline"
 
-RUN apt-get update && apt-get install -y procps
+USER root
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    procps \
+    awscli \
+ && apt-get clean \
+ && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workspace
 
-COPY environment.yml .
+COPY --chown=$MAMBA_USER:$MAMBA_USER environment.yml .
 
-RUN conda env create -f environment.yml && conda clean -a
+RUN micromamba install -y -n base -f environment.yml \
+ && micromamba clean -afy
 
-ENV PATH=/opt/conda/envs/p53-regulatory-network/bin:$PATH
+ENV PATH=/opt/conda/bin:$PATH
+
+COPY src/ ./src/
+
+USER $MAMBA_USER
 
 CMD ["/bin/bash"]
