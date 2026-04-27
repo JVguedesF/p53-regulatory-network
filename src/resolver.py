@@ -1,11 +1,10 @@
 from __future__ import annotations
+from Bio import Entrez
 
 import logging
 import os
 import time
 import xml.etree.ElementTree as ET
-
-from Bio import Entrez
 
 Entrez.email = os.environ.get("NCBI_EMAIL", "your-email@example.com")
 

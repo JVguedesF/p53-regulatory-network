@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
+from src.utils import download_genome
+
 import argparse
 import logging
 import os
 import sys
-
 import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from src.utils import download_genome  # noqa: E402
 
 _CONFIG_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -17,7 +16,6 @@ _CONFIG_PATH = os.path.join(
 
 
 def _load_genome_defaults() -> dict:
-    """Read genome defaults from config.yaml, fall back to hardcoded values."""
     try:
         with open(_CONFIG_PATH, encoding="utf-8") as f:
             config = yaml.safe_load(f) or {}
