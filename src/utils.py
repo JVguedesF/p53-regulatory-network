@@ -1,17 +1,17 @@
 from __future__ import annotations
+from pathlib import Path
+from tqdm import tqdm
 
 import gzip
 import logging
 import shutil
-from pathlib import Path
-
 import requests
-from tqdm import tqdm
 
 _GENOME_REGISTRY: dict[str, tuple[str, str]] = {
     "hg38": ("homo_sapiens", "GRCh38"),
     "mm39": ("mus_musculus",  "GRCm39"),
 }
+
 
 def _ensembl_url(species: str, assembly: str, release: str) -> str:
     genus, epithet = species.split("_", 1)
@@ -22,6 +22,7 @@ def _ensembl_url(species: str, assembly: str, release: str) -> str:
         else f"https://ftp.ensembl.org/pub/release-{release}/fasta"
     )
     return f"{base}/{species}/dna/{fname}"
+
 
 def download_genome(
     target: str = "hg38",

@@ -1,20 +1,18 @@
 from __future__ import annotations
+from tqdm import tqdm
+from src.resolver import infer_sample_type, resolve_sample_type
+from pathlib import Path
+from typing import Sequence
 
 import csv
 import hashlib
 import logging
 import sys
 import time
-from pathlib import Path
-from typing import Sequence
-
-
 import requests
 import yaml
 import logging
-from tqdm import tqdm
 
-from src.resolver import infer_sample_type, resolve_sample_type
 
 TSV_HEADER = [
     "Condition",

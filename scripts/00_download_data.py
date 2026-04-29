@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
+from src.data_downloader import main
+
 import argparse
 import logging
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from src.data_downloader import main
 
 
 def _build_parser() -> argparse.ArgumentParser:

@@ -8,7 +8,6 @@ import tempfile
 
 
 def update_tsv(tsv_path: str, accession: str, **updates: str) -> None:
-    """Update specific columns for a given accession in a pipeline TSV."""
     abs_path = os.path.abspath(tsv_path)
     tmp_fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(abs_path), suffix=".tmp")
 
