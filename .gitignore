@@ -247,3 +247,4 @@ results/figures/*.pdf
 results/tables/*.tsv
 
 tests/
+.lintr
