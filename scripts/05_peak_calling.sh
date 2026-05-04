@@ -101,23 +101,32 @@ fi
 for TSV_FILE in "${TSV_FILES[@]}"; do
     [[ -f "$TSV_FILE" ]] || { warn "$TSV_FILE not found — skipping."; continue; }
     TSV_BASE="${TSV_FILE##*/}"; TSV_BASE="${TSV_BASE%.tsv}"
-
-    PEAKS_BASE="${OUT_DIR}/chipseq/${TSV_BASE}/05_peaks"
-    LOG="logs/chipseq/${TSV_BASE}_peak_calling.log"
-    mkdir -p "$PEAKS_BASE" "logs/chipseq"
-
     log "Processing: $TSV_FILE"
 
     declare -A bam_of_acc=()
+    has_chipseq=false
 
     while IFS=$'\x01' read -r _cond acc sample_type _pair _pe _rep \
                                  _input_acc _fastq _dl _sz _md5 \
                                  _qc _trimmed bam_path _rest; do
         [[ -z "$acc" || -z "$sample_type" ]] && continue
         case "${sample_type,,}" in
-            ip|input) bam_of_acc["$acc"]="$bam_path" ;;
+            ip|input)
+                has_chipseq=true
+                bam_of_acc["$acc"]="$bam_path"
+                ;;
+            rna) continue ;;
         esac
     done < <(tail -n +2 "$TSV_FILE" | tr $'\t' $'\x01')
+
+    if ! "$has_chipseq"; then
+        log "No ChIP-seq rows in $TSV_FILE — skipping."
+        continue
+    fi
+
+    PEAKS_BASE="${OUT_DIR}/chipseq/${TSV_BASE}/05_peaks"
+    LOG="logs/chipseq/${TSV_BASE}_peak_calling.log"
+    mkdir -p "$PEAKS_BASE" "logs/chipseq"
 
     declare -a _pids=() _ids=()
 
@@ -134,7 +143,7 @@ for TSV_FILE in "${TSV_FILES[@]}"; do
         esac
 
         [[ -f "$chip_bam" ]] \
-            || die "BAM not found for $acc: '$chip_bam' (did script 03 run?)"
+            || die "BAM not found for $acc: '$chip_bam' (did script 04 run?)"
         [[ -n "$input_acc" ]] \
             || die "Input_Accession is empty for IP $acc"
 

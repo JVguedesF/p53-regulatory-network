@@ -66,7 +66,7 @@ dedup() {
     rm -f "$tmp"
 
     local dup_rate
-    dup_rate=$(awk '/^DUPLICATE READS:/{dr=$3} /^ESTIMATED LIBRARY SIZE:/{next} END{print dr+0}' "$metrics" 2>/dev/null || echo "N/A")
+    dup_rate=$(awk '/^DUPLICATE READS:/{dr=$3} END{print dr+0}' "$metrics" 2>/dev/null || echo "N/A")
 
     tsv_update "$tsv" "$acc" "BAM_Path=$bam_out"
     success "$id — duplicates removed (dup reads: ${dup_rate})"
@@ -90,6 +90,22 @@ for TSV_FILE in "${TSV_FILES[@]}"; do
     TSV_BASE="${TSV_FILE##*/}"; TSV_BASE="${TSV_BASE%.tsv}"
     log "Processing: $TSV_FILE"
 
+    has_chipseq=false
+
+    while IFS=$'\x01' read -r _cond _acc sample_type _pair _pe _rep \
+                                 _input_acc _fastq _dl _sz _md5 \
+                                 _qc _trimmed _bam _rest; do
+        [[ -z "$sample_type" ]] && continue
+        case "${sample_type,,}" in
+            ip|input) has_chipseq=true; break ;;
+        esac
+    done < <(tail -n +2 "$TSV_FILE" | tr $'\t' $'\x01')
+
+    if ! "$has_chipseq"; then
+        log "No ChIP-seq rows in $TSV_FILE — skipping."
+        continue
+    fi
+
     DEDUP_OUT="${OUT_DIR}/chipseq/${TSV_BASE}/04_deduplication"
     LOG="${LOG_DIR}/chipseq/${TSV_BASE}_deduplication.log"
     mkdir -p "$DEDUP_OUT/reports" "$(dirname "$LOG")"
@@ -102,9 +118,9 @@ for TSV_FILE in "${TSV_FILES[@]}"; do
         [[ -z "$acc" || -z "$sample_type" ]] && continue
 
         case "${sample_type,,}" in
-            rna) log "Skipping RNA row: $acc"; continue ;;
+            rna)      log "Skipping RNA row: $acc"; continue ;;
             ip|input) ;;
-            *) die "Unknown Sample_Type='$sample_type' for $acc" ;;
+            *)        die "Unknown Sample_Type='$sample_type' for $acc" ;;
         esac
 
         [[ -f "$bam_path" ]] \

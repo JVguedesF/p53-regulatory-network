@@ -11,7 +11,6 @@ import sys
 import time
 import requests
 import yaml
-import logging
 
 
 TSV_HEADER = [
@@ -36,12 +35,14 @@ TSV_HEADER = [
     "DEG_Status",
 ]
 
+
 def load_config(config_path: Path) -> dict:
     try:
         with open(config_path, encoding="utf-8") as f:
             return yaml.safe_load(f) or {}
     except FileNotFoundError:
         return {}
+
 
 def setup_environment(project_dir: Path, config: dict) -> tuple[Path, Path]:
     paths = config.get("paths", {})
@@ -63,16 +64,28 @@ def setup_environment(project_dir: Path, config: dict) -> tuple[Path, Path]:
     )
     return tsv_dir, raw_dir
 
+
 def write_tsv(rows: list[dict], filepath: Path) -> None:
     with open(filepath, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=TSV_HEADER, delimiter="\t")
         writer.writeheader()
         writer.writerows(rows)
 
+
 class BaseDownloader:
-    def __init__(self, raw_dir: Path, sample_type_overrides: dict[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        raw_dir: Path,
+        sample_type_overrides: dict[str, str] | None = None,
+        replicates: dict[str, int] | None = None,
+        conditions: dict[str, str] | None = None,
+        condition_name: str = "",
+    ) -> None:
         self.raw_dir = raw_dir
         self.overrides: dict[str, str] = sample_type_overrides or {}
+        self.replicates: dict[str, int] = replicates or {}
+        self.conditions: dict[str, str] = conditions or {}
+        self.condition_name: str = condition_name
 
     def fetch(self, experiment_id: str) -> tuple[list[dict], str | None]:
         raise NotImplementedError
@@ -164,7 +177,7 @@ class BaseDownloader:
 
     def _empty_row(self) -> dict[str, str]:
         return dict.fromkeys(TSV_HEADER, "")
-    
+
 
 class EncodeDownloader(BaseDownloader):
     _JSON_HEADERS = {"accept": "application/json"}
@@ -178,13 +191,13 @@ class EncodeDownloader(BaseDownloader):
 
         target = file_data.get("target") or {}
         target_label = target.get("label", "") if isinstance(target, dict) else ""
-        
+
         return infer_sample_type(f"{condition} {target_label}", override)
 
     def _control_files_by_replicate(self, ctrl_experiment_id: str) -> dict[str, str]:
         url = f"https://www.encodeproject.org/experiments/{ctrl_experiment_id}/?format=json"
         data, err = self.request_data(url, headers=self._JSON_HEADERS)
-        
+
         if err or not isinstance(data, dict):
             logging.warning(f"[ENCODE] Failed to fetch control {ctrl_experiment_id}: {err}")
             return {}
@@ -199,7 +212,7 @@ class EncodeDownloader(BaseDownloader):
             rep_num = str(rep_data.get("biological_replicate_number", ""))
             accession = file.get("accession", "")
             paired_end = str(file.get("paired_end", ""))
-            
+
             acc_key = f"{accession}_{paired_end}" if paired_end in ("1", "2") else accession
 
             if acc_key:
@@ -257,7 +270,7 @@ class EncodeDownloader(BaseDownloader):
 
             url = f"https://www.encodeproject.org/experiments/{ctrl_id}/?format=json"
             data, err = self.request_data(url, headers=self._JSON_HEADERS)
-            
+
             if err or not isinstance(data, dict):
                 logging.warning(f"[ENCODE] Failed to fetch control {ctrl_id}: {err}")
                 continue
@@ -273,10 +286,10 @@ class EncodeDownloader(BaseDownloader):
 
     def _link_ip_to_controls(self, ip_rows: list[dict], ctrl_rows: list[dict], controls: list[dict]) -> None:
         ctrl_ids = [
-            c.get("accession", "") for c in controls 
+            c.get("accession", "") for c in controls
             if isinstance(c, dict) and c.get("accession")
         ]
-        
+
         control_map = self._fetch_control_acc_by_replicate(ctrl_ids) if ctrl_ids else {}
         fallback_acc = ctrl_rows[0]["Accession"] if ctrl_rows else ""
 
@@ -294,7 +307,7 @@ class EncodeDownloader(BaseDownloader):
     def fetch(self, experiment_id: str) -> tuple[list[dict], str | None]:
         url = f"https://www.encodeproject.org/experiments/{experiment_id}/?format=json"
         data, err = self.request_data(url, headers=self._JSON_HEADERS)
-        
+
         if err or not isinstance(data, dict):
             return [], err or "Invalid API response."
 
@@ -313,14 +326,21 @@ class EncodeDownloader(BaseDownloader):
             ctrl_rows = self._fetch_control_rows(controls, condition)
             if not ctrl_rows:
                 logging.warning(f"[ENCODE] {experiment_id}: no Input obtained. Peak calling will require manual intervention.")
-            
+
             self._link_ip_to_controls(ip_rows, ctrl_rows, controls)
 
         return ctrl_rows + ip_rows, None
 
 
 class EnaDownloader(BaseDownloader):
-    def _process_entry(self, entry: dict, condition: str) -> list[dict]:
+    def _resolve_condition(self, run_acc: str, experiment_id: str) -> str:
+        if run_acc in self.conditions:
+            return self.conditions[run_acc]
+        if self.condition_name:
+            return self.condition_name
+        return experiment_id
+
+    def _process_entry(self, entry: dict, experiment_id: str) -> list[dict]:
         ftp_raw = entry.get("fastq_ftp", "") or entry.get("sra_ftp", "")
         if not ftp_raw:
             return []
@@ -330,7 +350,8 @@ class EnaDownloader(BaseDownloader):
         md5s = (entry.get("fastq_md5", "") or "").split(";")
 
         run_acc = entry.get("run_accession", "N/A")
-        replicate = entry.get("sample_accession", "N/A")
+        condition = self._resolve_condition(run_acc, experiment_id)
+        replicate = str(self.replicates.get(run_acc, "N/A"))
         sample_type = resolve_sample_type(run_acc, self.overrides.get(run_acc, ""))
 
         is_pe = entry.get("library_layout") == "PAIRED" and len(ftp_links) == 2
@@ -432,6 +453,7 @@ DOWNLOADER_REGISTRY: dict[str, type[BaseDownloader]] = {
     "ERR": EnaDownloader,
 }
 
+
 def main(target_ids: list[str] | None = None) -> None:
     project_dir = Path(__file__).parent.parent
     config_path = project_dir / "config" / "config.yaml"
@@ -450,11 +472,20 @@ def main(target_ids: list[str] | None = None) -> None:
             logging.warning(f"[PULAR] {eid}: prefixo desconhecido.")
             continue
 
-        exp_info = experiments.get(eid, {})
-        overrides = exp_info.get("overrides", {})
+        exp_info       = experiments.get(eid, {})
+        overrides      = exp_info.get("overrides", {})
+        replicates     = exp_info.get("replicates", {})
+        conditions     = exp_info.get("conditions", {})
+        condition_name = exp_info.get("condition_name", "")
 
         try:
-            downloader = downloader_class(raw_dir=raw_dir, sample_type_overrides=overrides)
+            downloader = downloader_class(
+                raw_dir=raw_dir,
+                sample_type_overrides=overrides,
+                replicates=replicates,
+                conditions=conditions,
+                condition_name=condition_name,
+            )
             rows, error = downloader.fetch(eid)
 
             if error:
@@ -480,6 +511,7 @@ def main(target_ids: list[str] | None = None) -> None:
 
         except Exception as exc:
             logging.critical(f"[{eid}] Falha crítica: {exc}")
+
 
 if __name__ == "__main__":
     main(sys.argv[1:] or None)

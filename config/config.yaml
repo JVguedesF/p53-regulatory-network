@@ -1,14 +1,29 @@
 downloads:
   PRJNA203360:
     description: "p53 ChIP-seq MCF7 (Nutlin-3a)"
+    condition_name: "p53_ChIP_MCF7"
     overrides:
       SRR856298: "Input"
       SRR856299: "Input"
       SRR866627: "IP"
+    replicates:
+      SRR856298: 1
+      SRR856299: 2
+      SRR866627: 1
 
   PRJNA203359:
     description: "RNA-seq MCF7 (Nutlin-3a)"
-    overrides: {}
+    condition_name: "MCF7"
+    conditions:
+      SRR867127: "MCF7_control"
+      SRR867128: "MCF7_control"
+      SRR867129: "MCF7_nutlin"
+      SRR867130: "MCF7_nutlin"
+    replicates:
+      SRR867127: 1
+      SRR867128: 2
+      SRR867129: 1
+      SRR867130: 2
 
   ENCSR000DWJ:
     description: "H3K4me3 ChIP-seq (MCF-7)"

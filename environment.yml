@@ -25,6 +25,7 @@ dependencies:
   - macs2
   - multiqc
   - meme
+  - salmon
 
   # Data/ML
   - pandas
