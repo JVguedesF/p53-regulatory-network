@@ -20,7 +20,6 @@ p53-regulatory-network/
 │   └── processed/    # BAM, BED, count matrices
 ├── scripts/          # Bash pipelines for primary processing
 ├── src/              # Python and R source code
-├── notebooks/        # Jupyter Notebooks and RMarkdown for EDA
 ├── results/          # Figures, network files, survival statistics
 └── docs/             # Methodology, parameter rationale, biological interpretation
 ```
