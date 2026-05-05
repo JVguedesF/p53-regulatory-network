@@ -13,7 +13,7 @@ args <- commandArgs(trailingOnly = TRUE)
 
 if (length(args) < 1) {
     stop(
-        "Usage: Rscript 06_peak_annotation.R <metadata.tsv>",
+        "Usage: Rscript 07_peak_annotation.R <metadata.tsv>",
         " [tss_upstream] [tss_downstream]",
         call. = FALSE
     )
@@ -35,6 +35,17 @@ promoter_windows <- getPromoters(
     upstream   = tss_upstream,
     downstream = tss_downstream
 )
+
+# annotation TSVs/RData go here — read by scripts 06b and 10
+anno_root <- file.path("pipeline_outputs", "chipseq", tsv_base, "annotation")
+# figures go here — for human consumption
+fig_root <- file.path("results", "figures", "chipseq", tsv_base, "annotation")
+# final tables go here
+tab_root <- file.path("results", "tables", "chipseq", tsv_base)
+
+dir.create(anno_root, recursive = TRUE, showWarnings = FALSE)
+dir.create(fig_root, recursive = TRUE, showWarnings = FALSE)
+dir.create(tab_root, recursive = TRUE, showWarnings = FALSE)
 
 save_pdf <- function(expr, path, width = 7, height = 6) {
     pdf(path, width = width, height = height)
@@ -65,11 +76,14 @@ mark_annotated <- function(tsv, accession) {
 
 process_sample <- function(row, tsv_path, tsv_base, txdb, promoter_windows,
                            main_chrs, max_peaks_prof,
-                           tss_upstream, tss_downstream) {
+                           tss_upstream, tss_downstream,
+                           anno_root, fig_root) {
     acc <- row$Accession
     label <- sprintf("%s_Rep%s_%s", row$Condition, row$Replicate, acc)
-    sample_dir <- file.path("results", "annotation", tsv_base, label)
-    rdata_path <- file.path(sample_dir, paste0(label, "_anno.RData"))
+
+    sample_anno_dir <- file.path(anno_root, label)
+    sample_fig_dir <- file.path(fig_root, label)
+    rdata_path <- file.path(sample_anno_dir, paste0(label, "_anno.RData"))
 
     if (isTRUE(row$Annotated == "TRUE") && file.exists(rdata_path)) {
         message(sprintf("[skip] %s — already annotated", label))
@@ -82,7 +96,8 @@ process_sample <- function(row, tsv_path, tsv_base, txdb, promoter_windows,
     }
 
     message(sprintf("[annotate] %s", label))
-    dir.create(sample_dir, recursive = TRUE, showWarnings = FALSE)
+    dir.create(sample_anno_dir, recursive = TRUE, showWarnings = FALSE)
+    dir.create(sample_fig_dir, recursive = TRUE, showWarnings = FALSE)
 
     peaks <- readPeakFile(row$Peak_File, as = "GRanges")
 
@@ -110,24 +125,15 @@ process_sample <- function(row, tsv_path, tsv_base, txdb, promoter_windows,
 
     write.table(
         anno_df,
-        file.path(sample_dir, paste0(label, "_annotation.tsv")),
+        file.path(sample_anno_dir, paste0(label, "_annotation.tsv")),
         sep       = "\t",
         quote     = FALSE,
         row.names = FALSE
     )
 
-    save_pdf(
-        plotAnnoPie(peak_anno),
-        file.path(sample_dir, paste0(label, "_annopie.pdf"))
-    )
-    save_pdf(
-        plotAnnoBar(peak_anno),
-        file.path(sample_dir, paste0(label, "_annobar.pdf"))
-    )
-    save_pdf(
-        plotDistToTSS(peak_anno),
-        file.path(sample_dir, paste0(label, "_dist_to_tss.pdf"))
-    )
+    save_pdf(plotAnnoPie(peak_anno), file.path(sample_fig_dir, paste0(label, "_annopie.pdf")))
+    save_pdf(plotAnnoBar(peak_anno), file.path(sample_fig_dir, paste0(label, "_annobar.pdf")))
+    save_pdf(plotDistToTSS(peak_anno), file.path(sample_fig_dir, paste0(label, "_dist_to_tss.pdf")))
 
     rm(anno_df)
     gc()
@@ -142,7 +148,7 @@ process_sample <- function(row, tsv_path, tsv_base, txdb, promoter_windows,
         message(sprintf("[avgprof] %s — downsampled to top %d peaks by score", label, max_peaks_prof))
     }
 
-    if (length(gr) == 0) {
+    if (length(gr) == 0L) {
         message(sprintf("[avgprof] %s — no peaks on main chromosomes, skipping", label))
     } else {
         tag_matrix <- tryCatch(
@@ -156,28 +162,26 @@ process_sample <- function(row, tsv_path, tsv_base, txdb, promoter_windows,
         if (!is.null(tag_matrix)) {
             tag_matrix <- tag_matrix[rowSums(tag_matrix) > 0, , drop = FALSE]
 
-            if (nrow(tag_matrix) < 2) {
+            if (nrow(tag_matrix) < 2L) {
                 message(sprintf("[avgprof] %s — fewer than 2 non-zero rows, skipping avgprof", label))
             } else {
                 tryCatch(
                     save_pdf(
                         plotAvgProf(
                             tag_matrix,
-                            xlim  = c(-tss_upstream, tss_downstream),
-                            conf  = FALSE,
-                            xlab  = "Distance to TSS (bp)",
-                            ylab  = "Read count frequency"
+                            xlim = c(-tss_upstream, tss_downstream),
+                            conf = FALSE,
+                            xlab = "Distance to TSS (bp)",
+                            ylab = "Read count frequency"
                         ),
-                        file.path(sample_dir, paste0(label, "_avgprof.pdf")),
-                        width = 8,
-                        height = 5
+                        file.path(sample_fig_dir, paste0(label, "_avgprof.pdf")),
+                        width = 8, height = 5
                     ),
                     error = function(e) {
                         message(sprintf("[avgprof] %s — plotAvgProf failed: %s", label, conditionMessage(e)))
                     }
                 )
             }
-
             rm(tag_matrix)
             gc()
         }
@@ -197,9 +201,7 @@ process_sample <- function(row, tsv_path, tsv_base, txdb, promoter_windows,
     return(label)
 }
 
-if (!file.exists(tsv_path)) {
-    stop("TSV not found: ", tsv_path, call. = FALSE)
-}
+if (!file.exists(tsv_path)) stop("TSV not found: ", tsv_path, call. = FALSE)
 
 meta <- read_tsv(tsv_path)
 samples <- meta[
@@ -208,9 +210,7 @@ samples <- meta[
         nzchar(meta$Peak_File),
 ]
 
-if (nrow(samples) == 0) {
-    stop("No IP rows with Peak_File found in TSV.", call. = FALSE)
-}
+if (nrow(samples) == 0L) stop("No IP rows with Peak_File found in TSV.", call. = FALSE)
 
 message(sprintf("[setup] %s | %d IP sample(s) to process", tsv_base, nrow(samples)))
 
@@ -226,29 +226,21 @@ for (i in seq_len(nrow(samples))) {
         main_chrs        = main_chrs,
         max_peaks_prof   = max_peaks_prof,
         tss_upstream     = tss_upstream,
-        tss_downstream   = tss_downstream
+        tss_downstream   = tss_downstream,
+        anno_root        = anno_root,
+        fig_root         = fig_root
     )
-
-    if (!is.null(label)) {
-        processed_labels <- c(processed_labels, label)
-    }
-
+    if (!is.null(label)) processed_labels <- c(processed_labels, label)
     gc()
 }
 
-if (length(processed_labels) == 0) {
-    stop("No samples were successfully annotated.", call. = FALSE)
-}
-
-dataset_dir <- file.path("results", "annotation", tsv_base)
-dir.create(dataset_dir, recursive = TRUE, showWarnings = FALSE)
+if (length(processed_labels) == 0L) stop("No samples were successfully annotated.", call. = FALSE)
 
 message("[comparative] Generating multi-sample AnnoBar")
 
 anno_list <- list()
-
 for (label in processed_labels) {
-    rdata_path <- file.path(dataset_dir, label, paste0(label, "_anno.RData"))
+    rdata_path <- file.path(anno_root, label, paste0(label, "_anno.RData"))
     if (file.exists(rdata_path)) {
         local({
             load(rdata_path)
@@ -258,12 +250,11 @@ for (label in processed_labels) {
     gc()
 }
 
-if (length(anno_list) > 1) {
+if (length(anno_list) > 1L) {
     save_pdf(
         plotAnnoBar(anno_list),
-        file.path(dataset_dir, "annobar_comparative.pdf"),
-        width  = 9,
-        height = 5
+        file.path(fig_root, "annobar_comparative.pdf"),
+        width = 9, height = 5
     )
 }
 
@@ -273,7 +264,7 @@ gc()
 message("[multi-peak] Identifying genes with multiple promoter peaks")
 
 all_anno_df <- do.call(rbind, lapply(processed_labels, function(label) {
-    tsv_file <- file.path(dataset_dir, label, paste0(label, "_annotation.tsv"))
+    tsv_file <- file.path(anno_root, label, paste0(label, "_annotation.tsv"))
     if (!file.exists(tsv_file)) {
         return(NULL)
     }
@@ -286,7 +277,7 @@ promoter_df <- all_anno_df[grepl("Promoter", all_anno_df$annotation), ]
 peak_counts <- sort(table(promoter_df$geneId), decreasing = TRUE)
 multi_peak <- peak_counts[peak_counts > 1]
 
-if (length(multi_peak) > 0) {
+if (length(multi_peak) > 0L) {
     message(sprintf("[multi-peak] %d gene(s) with >1 promoter peak", length(multi_peak)))
     print(head(multi_peak, 20))
 } else {
@@ -297,9 +288,9 @@ rm(all_anno_df)
 gc()
 
 promoter_genes <- as.character(unique(promoter_df$geneId))
-writeLines(promoter_genes, file.path(dataset_dir, "promoter_genes.txt"))
+writeLines(promoter_genes, file.path(tab_root, "promoter_genes.txt"))
 
 message(sprintf(
     "[export] %d unique promoter genes → %s/promoter_genes.txt",
-    length(promoter_genes), dataset_dir
+    length(promoter_genes), tab_root
 ))

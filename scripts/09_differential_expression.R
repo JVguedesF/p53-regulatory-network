@@ -19,7 +19,7 @@ args <- commandArgs(trailingOnly = TRUE)
 
 if (length(args) < 1) {
     stop(
-        "Usage: Rscript 08_differential_expression.R <metadata.tsv>",
+        "Usage: Rscript 09_differential_expression.R <metadata.tsv>",
         " [treated_condition] [reference_condition]",
         " [lfc_threshold=1] [padj_threshold=0.05]",
         call. = FALSE
@@ -68,7 +68,7 @@ build_tx2gene <- function(fasta_gz, cache_path) {
 
     if (!file.exists(fasta_gz)) {
         stop("cDNA FASTA not found: ", fasta_gz,
-            "\nExpected from script 07 Salmon index build.",
+            "\nExpected from script 08 Salmon index build.",
             call. = FALSE
         )
     }
@@ -127,10 +127,8 @@ rna_meta <- meta[
         nzchar(meta$BAM_Path),
 ]
 
-if (nrow(rna_meta) == 0) {
-    stop("No RNA rows with quantification paths found.\nRun script 07 first.",
-        call. = FALSE
-    )
+if (nrow(rna_meta) == 0L) {
+    stop("No RNA rows with quantification paths found.\nRun script 08 first.", call. = FALSE)
 }
 
 samples <- rna_meta[!duplicated(rna_meta$BAM_Path), ]
@@ -139,7 +137,7 @@ missing_sf <- !sapply(samples$BAM_Path, function(d) file.exists(file.path(d, "qu
 if (any(missing_sf)) {
     stop("Missing quant.sf in:\n",
         paste(samples$BAM_Path[missing_sf], collapse = "\n"),
-        "\nRun script 07 first.",
+        "\nRun script 08 first.",
         call. = FALSE
     )
 }
@@ -147,9 +145,9 @@ if (any(missing_sf)) {
 conditions <- unique(samples$Condition)
 
 if (is.null(treated_cond)) {
-    if (length(conditions) != 2) {
+    if (length(conditions) != 2L) {
         stop(sprintf(
-            "Cannot auto-detect conditions: %d found (%s).\nSpecify: Rscript 08_... <tsv> <treated> <reference>",
+            "Cannot auto-detect conditions: %d found (%s).\nSpecify: Rscript 09_... <tsv> <treated> <reference>",
             length(conditions), paste(conditions, collapse = ", ")
         ), call. = FALSE)
     }
@@ -160,13 +158,10 @@ if (is.null(treated_cond)) {
 
 for (cond in c(treated_cond, reference_cond)) {
     if (!cond %in% conditions) {
-        stop(
-            sprintf(
-                "Condition '%s' not found. Available: %s",
-                cond, paste(conditions, collapse = ", ")
-            ),
-            call. = FALSE
-        )
+        stop(sprintf(
+            "Condition '%s' not found. Available: %s",
+            cond, paste(conditions, collapse = ", ")
+        ), call. = FALSE)
     }
 }
 
@@ -181,7 +176,7 @@ message(sprintf(
     sum(samples$Condition == reference_cond)
 ))
 
-if (any(table(samples$condition) < 2)) {
+if (any(table(samples$condition) < 2L)) {
     warning("Some conditions have fewer than 2 replicates. Dispersion estimation will be unreliable.")
 }
 
@@ -230,9 +225,18 @@ res_df <- merge(res_df, sym_map, by.x = "gene_id", by.y = "ENSEMBL", all.x = TRU
 res_df <- res_df[order(res_df$padj, na.last = TRUE), ]
 
 label <- sprintf("%s_vs_%s", treated_cond, reference_cond)
-out_dir <- file.path("results", "deseq2", tsv_base, label)
-deg_dir <- file.path("results", "deseq2", tsv_base)
+
+# DESeq2 outputs feed script 10 → pipeline_outputs
+out_dir <- file.path("pipeline_outputs", "rnaseq", tsv_base, "deseq2", label)
+deg_dir <- file.path("pipeline_outputs", "rnaseq", tsv_base, "deseq2")
+
+# gene lists and figures are for humans → results/
+tab_dir <- file.path("results", "tables", "rnaseq", tsv_base)
+fig_dir <- file.path("results", "figures", "rnaseq", tsv_base)
+
 dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(tab_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(fig_dir, recursive = TRUE, showWarnings = FALSE)
 
 write.table(res_df,
     file.path(out_dir, "degs_all.tsv"),
@@ -252,14 +256,13 @@ write.table(degs_sig,
 
 n_up <- sum(degs_sig$log2FoldChange > 0, na.rm = TRUE)
 n_down <- sum(degs_sig$log2FoldChange < 0, na.rm = TRUE)
-
 message(sprintf("[DESeq2] DEGs: %d total | %d up | %d down", nrow(degs_sig), n_up, n_down))
 
 activated <- degs_sig$gene_id[!is.na(degs_sig$log2FoldChange) & degs_sig$log2FoldChange > 0]
 repressed <- degs_sig$gene_id[!is.na(degs_sig$log2FoldChange) & degs_sig$log2FoldChange < 0]
 
-writeLines(activated, file.path(deg_dir, "activated_genes.txt"))
-writeLines(repressed, file.path(deg_dir, "repressed_genes.txt"))
+writeLines(activated, file.path(tab_dir, "activated_genes.txt"))
+writeLines(repressed, file.path(tab_dir, "repressed_genes.txt"))
 
 vsd <- vst(dds, blind = TRUE)
 
@@ -269,7 +272,7 @@ save_pdf(
         ylim  = c(-5, 5),
         alpha = padj_threshold
     ),
-    file.path(out_dir, "ma_plot.pdf")
+    file.path(fig_dir, "ma_plot.pdf")
 )
 
 vol_df <- res_df[!is.na(res_df$padj) & !is.na(res_df$log2FoldChange), ]
@@ -279,33 +282,31 @@ vol_df$status[vol_df$padj < padj_threshold & vol_df$log2FoldChange < -lfc_thresh
 vol_df$status <- factor(vol_df$status, levels = c("Up", "Down", "NS"))
 
 save_pdf(
-    {
-        print(
-            ggplot(vol_df, aes(x = log2FoldChange, y = -log10(padj), color = status)) +
-                geom_point(alpha = 0.5, size = 0.8, shape = 16) +
-                scale_color_manual(
-                    values = c(Up = "#E74C3C", Down = "#2980B9", NS = "grey70"),
-                    drop   = FALSE
-                ) +
-                geom_vline(
-                    xintercept = c(-lfc_threshold, lfc_threshold),
-                    linetype = "dashed", linewidth = 0.4, color = "black"
-                ) +
-                geom_hline(
-                    yintercept = -log10(padj_threshold),
-                    linetype = "dashed", linewidth = 0.4, color = "black"
-                ) +
-                labs(
-                    title = sprintf("Volcano — %s vs %s", treated_cond, reference_cond),
-                    x     = "Log2 Fold Change",
-                    y     = "-Log10(adjusted p-value)",
-                    color = NULL
-                ) +
-                theme_bw(base_size = 12) +
-                theme(legend.position = "top")
-        )
-    },
-    file.path(out_dir, "volcano_plot.pdf")
+    print(
+        ggplot(vol_df, aes(x = log2FoldChange, y = -log10(padj), color = status)) +
+            geom_point(alpha = 0.5, size = 0.8, shape = 16) +
+            scale_color_manual(
+                values = c(Up = "#E74C3C", Down = "#2980B9", NS = "grey70"),
+                drop   = FALSE
+            ) +
+            geom_vline(
+                xintercept = c(-lfc_threshold, lfc_threshold),
+                linetype = "dashed", linewidth = 0.4, color = "black"
+            ) +
+            geom_hline(
+                yintercept = -log10(padj_threshold),
+                linetype = "dashed", linewidth = 0.4, color = "black"
+            ) +
+            labs(
+                title = sprintf("Volcano — %s vs %s", treated_cond, reference_cond),
+                x     = "Log2 Fold Change",
+                y     = "-Log10(adjusted p-value)",
+                color = NULL
+            ) +
+            theme_bw(base_size = 12) +
+            theme(legend.position = "top")
+    ),
+    file.path(fig_dir, "volcano_plot.pdf")
 )
 
 save_pdf(
@@ -325,10 +326,10 @@ save_pdf(
                 theme_bw(base_size = 12)
         )
     },
-    file.path(out_dir, "pca_plot.pdf")
+    file.path(fig_dir, "pca_plot.pdf")
 )
 
-if (nrow(degs_sig) >= 2) {
+if (nrow(degs_sig) >= 2L) {
     top_n <- min(50L, nrow(degs_sig))
     top_ids <- degs_sig$gene_id[seq_len(top_n)]
     top_ids_present <- intersect(top_ids, rownames(assay(vsd)))
@@ -351,34 +352,26 @@ if (nrow(degs_sig) >= 2) {
     )
 
     save_pdf(
-        {
-            draw(Heatmap(
-                mat,
-                name = "Z-score",
-                top_annotation = col_ann,
-                row_labels = row_labels,
-                row_names_gp = gpar(fontsize = 7),
-                cluster_rows = TRUE,
-                cluster_columns = FALSE,
-                show_column_names = TRUE,
-                column_title = sprintf(
-                    "Top %d DEGs — %s vs %s",
-                    nrow(mat), treated_cond, reference_cond
-                )
-            ))
-        },
-        file.path(out_dir, "heatmap_top50.pdf"),
-        width = 8,
-        height = 10
+        draw(Heatmap(
+            mat,
+            name = "Z-score",
+            top_annotation = col_ann,
+            row_labels = row_labels,
+            row_names_gp = gpar(fontsize = 7),
+            cluster_rows = TRUE,
+            cluster_columns = FALSE,
+            show_column_names = TRUE,
+            column_title = sprintf(
+                "Top %d DEGs — %s vs %s", nrow(mat), treated_cond, reference_cond
+            )
+        )),
+        file.path(fig_dir, "heatmap_top50.pdf"),
+        width = 8, height = 10
     )
 }
 
-for (acc in rna_meta$Accession) {
-    mark_done(tsv_path, acc)
-}
+for (acc in rna_meta$Accession) mark_done(tsv_path, acc)
 
-message(sprintf("[done] Results → %s", out_dir))
-message(sprintf(
-    "[done] activated: %d | repressed: %d | lists → %s",
-    length(activated), length(repressed), deg_dir
-))
+message(sprintf("[done] DESeq2 tables → %s", out_dir))
+message(sprintf("[done] Gene lists   → %s", tab_dir))
+message(sprintf("[done] Figures      → %s", fig_dir))
