@@ -13,6 +13,7 @@ This project integrates ChIP-seq and RNA-seq data to map the p53 regulatory netw
 This multi-omics approach distinguishes direct p53 targets — where the protein physically binds and alters expression — from indirect ones, providing a systemic view of p53 as a tumor suppressor and tumor microenvironment modulator.
 
 ## Repository Structure
+
 ```
 p53-regulatory-network/
 ├── data/
@@ -26,24 +27,27 @@ p53-regulatory-network/
 
 ## Tools
 
-| Category | Tools |
-|---|---|
-| Genomic Processing | FastQC, Trim Galore, Bowtie2, STAR, Salmon, SAMtools, Picard |
-| Peak Calling & Annotation | MACS2, ChIPseeker |
-| Differential Expression | DESeq2 (R) |
-| Motif Analysis | MEME Suite, custom probabilistic implementation (Python) |
-| Integration & Networks | pandas, pybedtools, networkx |
-| Survival & TCGA | TCGAbiolinks, survival, survminer (R) |
-| Reproducibility | Nextflow, Docker |
+| Category                  | Tools                                                        |
+| ------------------------- | ------------------------------------------------------------ |
+| Genomic Processing        | FastQC, Trim Galore, Bowtie2, STAR, Salmon, SAMtools, Picard |
+| Peak Calling & Annotation | MACS2, ChIPseeker                                            |
+| Differential Expression   | DESeq2 (R)                                                   |
+| Motif Analysis            | MEME Suite, custom probabilistic implementation (Python)     |
+| Integration & Networks    | pandas, pybedtools, networkx                                 |
+| Survival & TCGA           | TCGAbiolinks, survival, survminer (R)                        |
+| Reproducibility           | Nextflow, Docker                                             |
 
 ## How to Run
 
 ### Option 1 — Automated (Docker + Nextflow)
+
 Recommended for reproducibility on clusters and cloud servers.
-*(Full container instructions and Nextflow commands coming soon.)*
+_(Full container instructions and Nextflow commands coming soon.)_
 
 ### Option 2 — Manual (Conda)
+
 Recommended for local development and step-by-step exploration.
+
 ```bash
 # Clone the repository
 git clone https://github.com/JVguedesF/p53-regulatory-network.git
@@ -56,6 +60,11 @@ conda activate p53-regulatory-network
 
 Run the primary processing scripts in the order they appear in the `scripts/` directory.
 
+```
+wget -P data/genome/fasta/ \
+  'https://ftp.ensembl.org/pub/current_fasta/homo_sapiens/cdna/Homo_sapiens.GRCh38.cdna.all.fa.gz'
+```
+
 ## Key Findings
 
-*This section will be updated as the project progresses with integrative findings, direct target validation, and clinical impact in the TCGA cohort.*
+_This section will be updated as the project progresses with integrative findings, direct target validation, and clinical impact in the TCGA cohort._
