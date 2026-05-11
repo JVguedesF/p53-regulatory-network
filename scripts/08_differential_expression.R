@@ -19,7 +19,7 @@ args <- commandArgs(trailingOnly = TRUE)
 
 if (length(args) < 1) {
     stop(
-        "Usage: Rscript 09_differential_expression.R <metadata.tsv>",
+        "Usage: Rscript 08_differential_expression.R <metadata.tsv>",
         " [treated_condition] [reference_condition]",
         " [lfc_threshold=1] [padj_threshold=0.05]",
         call. = FALSE
@@ -42,7 +42,7 @@ save_pdf <- function(expr, path, width = 8, height = 6) {
 
 mark_done <- function(tsv, accession) {
     system2(
-        "python",
+        "python3",
         args   = c("src/tsv_updater.py", tsv, accession, "DEG_Status=DONE"),
         stdout = FALSE,
         stderr = FALSE
@@ -60,7 +60,7 @@ build_tx2gene <- function(fasta_gz, cache_path) {
             stringsAsFactors = FALSE
         )
         message(sprintf(
-            "[tx2gene] %d transcripts → %d genes",
+            "[tx2gene] %d transcripts -> %d genes",
             nrow(df), length(unique(df$gene_id))
         ))
         return(df)
@@ -68,7 +68,7 @@ build_tx2gene <- function(fasta_gz, cache_path) {
 
     if (!file.exists(fasta_gz)) {
         stop("cDNA FASTA not found: ", fasta_gz,
-            "\nExpected from script 08 Salmon index build.",
+            "\nExpected from script 03b Salmon index build.",
             call. = FALSE
         )
     }
@@ -76,20 +76,27 @@ build_tx2gene <- function(fasta_gz, cache_path) {
     message("[tx2gene] Building from cDNA FASTA (cached after this run)...")
     dir.create(dirname(cache_path), recursive = TRUE, showWarnings = FALSE)
 
-    awk_prog <- paste0(
-        "/^>/{",
-        "tx=$1; sub(/^>/,\"\",tx); sub(/\\.[0-9]+$/,\"\",tx);",
-        "g=\"\";",
-        "for(i=2;i<=NF;i++) if($i~/^gene:/){g=$i;",
-        "  sub(/^gene:/,\"\",g); sub(/\\.[0-9]+$/,\"\",g)};",
-        "if(g!=\"\") print tx\"\\t\"g}"
+    py_script <- paste0(
+        "import gzip, re, sys\n",
+        'out = open(sys.argv[1], "w")\n',
+        'pat = re.compile(r"gene:(ENSG[^.\\s]+)")\n',
+        'with gzip.open(sys.argv[2], "rt") as f:\n',
+        "    for line in f:\n",
+        '        if not line.startswith(">"): continue\n',
+        '        tx = line[1:].split()[0].split(".")[0]\n',
+        "        m = pat.search(line)\n",
+        '        if m: out.write(tx + "\\t" + m.group(1) + "\\n")\n',
+        "out.close()\n"
     )
 
-    ret <- system2("bash", args = c("-c", paste(
-        "gzip -dc", shQuote(fasta_gz),
-        "| awk",    shQuote(awk_prog),
-        ">",        shQuote(cache_path)
-    )))
+    py_file <- tempfile(fileext = ".py")
+    writeLines(py_script, py_file)
+    on.exit(unlink(py_file), add = TRUE)
+
+    ret <- system2("python3",
+        args = c(py_file, cache_path, fasta_gz),
+        stdout = FALSE, stderr = FALSE
+    )
 
     if (ret != 0 || !file.exists(cache_path) || file.size(cache_path) == 0) {
         stop("Failed to build tx2gene from FASTA. Check file integrity.", call. = FALSE)
@@ -103,7 +110,7 @@ build_tx2gene <- function(fasta_gz, cache_path) {
         stringsAsFactors = FALSE
     )
     message(sprintf(
-        "[tx2gene] %d transcripts → %d genes",
+        "[tx2gene] %d transcripts -> %d genes",
         nrow(df), length(unique(df$gene_id))
     ))
     df
@@ -128,7 +135,7 @@ rna_meta <- meta[
 ]
 
 if (nrow(rna_meta) == 0L) {
-    stop("No RNA rows with quantification paths found.\nRun script 08 first.", call. = FALSE)
+    stop("No RNA rows with quantification paths found.\nRun script 03b first.", call. = FALSE)
 }
 
 samples <- rna_meta[!duplicated(rna_meta$BAM_Path), ]
@@ -137,7 +144,7 @@ missing_sf <- !sapply(samples$BAM_Path, function(d) file.exists(file.path(d, "qu
 if (any(missing_sf)) {
     stop("Missing quant.sf in:\n",
         paste(samples$BAM_Path[missing_sf], collapse = "\n"),
-        "\nRun script 08 first.",
+        "\nRun script 03b first.",
         call. = FALSE
     )
 }
@@ -147,7 +154,7 @@ conditions <- unique(samples$Condition)
 if (is.null(treated_cond)) {
     if (length(conditions) != 2L) {
         stop(sprintf(
-            "Cannot auto-detect conditions: %d found (%s).\nSpecify: Rscript 09_... <tsv> <treated> <reference>",
+            "Cannot auto-detect conditions: %d found (%s).\nSpecify: Rscript 08_... <tsv> <treated> <reference>",
             length(conditions), paste(conditions, collapse = ", ")
         ), call. = FALSE)
     }
@@ -194,7 +201,6 @@ txi <- tximport(
 )
 
 dds <- DESeqDataSetFromTximport(txi, colData = samples, design = ~condition)
-
 min_samples <- ceiling(ncol(dds) * MIN_SAMPLE_FRAC)
 dds <- dds[rowSums(counts(dds) >= MIN_COUNT) >= min_samples, ]
 
@@ -225,12 +231,7 @@ res_df <- merge(res_df, sym_map, by.x = "gene_id", by.y = "ENSEMBL", all.x = TRU
 res_df <- res_df[order(res_df$padj, na.last = TRUE), ]
 
 label <- sprintf("%s_vs_%s", treated_cond, reference_cond)
-
-# DESeq2 outputs feed script 10 → pipeline_outputs
 out_dir <- file.path("pipeline_outputs", "rnaseq", tsv_base, "deseq2", label)
-deg_dir <- file.path("pipeline_outputs", "rnaseq", tsv_base, "deseq2")
-
-# gene lists and figures are for humans → results/
 tab_dir <- file.path("results", "tables", "rnaseq", tsv_base)
 fig_dir <- file.path("results", "figures", "rnaseq", tsv_base)
 
@@ -238,8 +239,7 @@ dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 dir.create(tab_dir, recursive = TRUE, showWarnings = FALSE)
 dir.create(fig_dir, recursive = TRUE, showWarnings = FALSE)
 
-write.table(res_df,
-    file.path(out_dir, "degs_all.tsv"),
+write.table(res_df, file.path(out_dir, "degs_all.tsv"),
     sep = "\t", quote = FALSE, row.names = FALSE
 )
 
@@ -249,8 +249,7 @@ degs_sig <- res_df[
         abs(res_df$log2FoldChange) > lfc_threshold,
 ]
 
-write.table(degs_sig,
-    file.path(out_dir, "degs_significant.tsv"),
+write.table(degs_sig, file.path(out_dir, "degs_significant.tsv"),
     sep = "\t", quote = FALSE, row.names = FALSE
 )
 
@@ -287,7 +286,7 @@ save_pdf(
             geom_point(alpha = 0.5, size = 0.8, shape = 16) +
             scale_color_manual(
                 values = c(Up = "#E74C3C", Down = "#2980B9", NS = "grey70"),
-                drop   = FALSE
+                drop = FALSE
             ) +
             geom_vline(
                 xintercept = c(-lfc_threshold, lfc_threshold),
@@ -299,9 +298,7 @@ save_pdf(
             ) +
             labs(
                 title = sprintf("Volcano — %s vs %s", treated_cond, reference_cond),
-                x     = "Log2 Fold Change",
-                y     = "-Log10(adjusted p-value)",
-                color = NULL
+                x = "Log2 Fold Change", y = "-Log10(adjusted p-value)", color = NULL
             ) +
             theme_bw(base_size = 12) +
             theme(legend.position = "top")
@@ -346,8 +343,7 @@ if (nrow(degs_sig) >= 2L) {
     col_ann <- HeatmapAnnotation(
         condition = as.character(samples[colnames(mat), "condition"]),
         col = list(condition = setNames(
-            c("#2980B9", "#E74C3C"),
-            c(reference_cond, treated_cond)
+            c("#2980B9", "#E74C3C"), c(reference_cond, treated_cond)
         ))
     )
 
@@ -362,7 +358,8 @@ if (nrow(degs_sig) >= 2L) {
             cluster_columns = FALSE,
             show_column_names = TRUE,
             column_title = sprintf(
-                "Top %d DEGs — %s vs %s", nrow(mat), treated_cond, reference_cond
+                "Top %d DEGs — %s vs %s",
+                nrow(mat), treated_cond, reference_cond
             )
         )),
         file.path(fig_dir, "heatmap_top50.pdf"),
@@ -372,6 +369,6 @@ if (nrow(degs_sig) >= 2L) {
 
 for (acc in rna_meta$Accession) mark_done(tsv_path, acc)
 
-message(sprintf("[done] DESeq2 tables → %s", out_dir))
-message(sprintf("[done] Gene lists   → %s", tab_dir))
-message(sprintf("[done] Figures      → %s", fig_dir))
+message(sprintf("[done] DESeq2 tables -> %s", out_dir))
+message(sprintf("[done] Gene lists   -> %s", tab_dir))
+message(sprintf("[done] Figures      -> %s", fig_dir))

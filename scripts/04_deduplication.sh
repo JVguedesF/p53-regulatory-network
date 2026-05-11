@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 shopt -s nullglob
 
@@ -7,94 +7,87 @@ cd "$(dirname "$SCRIPT_DIR")"
 
 (( BASH_VERSINFO[0] >= 4 )) || { echo "Bash 4+ required (found $BASH_VERSION)" >&2; exit 1; }
 
+# shellcheck disable=SC1091
+source src/pipeline_common.sh
+
+# shellcheck disable=SC2034
 TSV_DIR="data/tsv"
 OUT_DIR="pipeline_outputs"
 LOG_DIR="logs"
-THREADS=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+
+_CPUS=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+THREADS="$_CPUS"
 MAX_JOBS=1
+SORT_MEM="2G"
 
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
-log()     { echo "[$(date '+%H:%M:%S')] $*"; [[ -n "${LOG:-}" ]] && echo "[$(date '+%H:%M:%S')] $*" >> "$LOG"; return 0; }
-die()     { echo -e "${RED}FATAL ERROR:${NC} $*" >&2; [[ -n "${LOG:-}" ]] && echo "FATAL ERROR: $*" >> "$LOG"; exit 1; }
-warn()    { echo -e "${YELLOW}WARNING:${NC} $*" >&2; [[ -n "${LOG:-}" ]] && echo "WARNING: $*" >> "$LOG"; return 0; }
-success() { echo -e "${GREEN}OK${NC} $*"; [[ -n "${LOG:-}" ]] && echo "OK $*" >> "$LOG"; return 0; }
-
-tsv_update() {
-    local tsv="$1" acc="$2"; shift 2
-    flock -x "${tsv}.lock" python src/tsv_updater.py "$tsv" "$acc" "$@"
-}
-
-write_log_header() {
-    local id="$1" bam="$2"
-    { flock 200
-      printf '\n%s\n' '====================================================================='
-      echo "[$(date '+%H:%M:%S')] START DEDUP: $id | $(basename "$bam")"
-      printf '%s\n' '---------------------------------------------------------------------'
-    } >> "$LOG" 200>> "$LOG"
-}
+declare -a FORWARD_ARGS=()
+while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+        --threads) THREADS="$2"; shift 2 ;;
+        --jobs)    MAX_JOBS="$2"; shift 2 ;;
+        --mem)     SORT_MEM="$2"; shift 2 ;;
+        *)         FORWARD_ARGS+=("$1"); shift ;;
+    esac
+done
+set -- "${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}"
 
 dedup() {
-    local id="$1" bam_in="$2" acc="$3" tsv="$4"
+    local id="$1" bam_in="$2" accs="$3" tsv="$4"
     local safe_id="${id// /_}"
-    local bam_out="${DEDUP_OUT}/${safe_id}_${acc}_dedup.bam"
-    local metrics="${DEDUP_OUT}/reports/${safe_id}_${acc}_metrics.txt"
+    local bam_out="${DEDUP_OUT}/${safe_id}_dedup.bam"
+    local metrics="${DEDUP_OUT}/reports/${safe_id}_metrics.txt"
 
     if [[ -f "$bam_out" ]] && samtools quickcheck "$bam_out" 2>/dev/null; then
         log "Skipping dedup: $id — intact."
-        tsv_update "$tsv" "$acc" "BAM_Path=$bam_out"
+        local acc; for acc in $accs; do tsv_update "$tsv" "$acc" "BAM_Path=$bam_out"; done
         return 0
     fi
 
     samtools quickcheck "$bam_in" || die "Corrupt input BAM: $bam_in"
-    write_log_header "$id" "$bam_in"
+    write_log_header "DEDUP" "$id" "$(basename "$bam_in")"
 
-    local tmp; tmp=$(mktemp)
+    local tmp tmp_sort
+    tmp=$(mktemp)
+    tmp_sort=$(mktemp -d)
+
     (
-        samtools sort -n -@ "$THREADS" "$bam_in" |
+        samtools sort -n -m "$SORT_MEM" -@ "$THREADS" -T "${tmp_sort}/n" "$bam_in" |
         samtools fixmate -m - - |
-        samtools sort -@ "$THREADS" - |
+        samtools sort -m "$SORT_MEM" -@ "$THREADS" -T "${tmp_sort}/c" - |
         samtools markdup -@ "$THREADS" -s -f "$metrics" - "$bam_out" &&
         samtools index -@ "$THREADS" "$bam_out"
     ) > "$tmp" 2>&1 \
-    || { echo "[$(date '+%H:%M:%S')] ERROR $id" >> "$LOG"; cat "$tmp" >> "$LOG"; rm -f "$tmp"; exit 1; }
+    || { echo "[$(date '+%H:%M:%S')] ERROR $id" >> "$LOG"; cat "$tmp" >> "$LOG"; rm -rf "$tmp" "$tmp_sort"; exit 1; }
 
     { flock 200
       cat "$tmp"
       cat "$metrics" 2>/dev/null || true
       echo "[$(date '+%H:%M:%S')] END DEDUP: $id"
     } >> "$LOG" 200>> "$LOG"
-    rm -f "$tmp"
+    rm -rf "$tmp" "$tmp_sort"
 
     local dup_rate
-    dup_rate=$(awk '/^DUPLICATE READS:/{dr=$3} END{print dr+0}' "$metrics" 2>/dev/null || echo "N/A")
+    dup_rate=$(awk '/^DUPLICATE PRIMARY TOTAL:/{dr=$4} END{print dr+0}' "$metrics" 2>/dev/null || echo "N/A")
 
-    tsv_update "$tsv" "$acc" "BAM_Path=$bam_out"
+    local acc; for acc in $accs; do tsv_update "$tsv" "$acc" "BAM_Path=$bam_out"; done
     success "$id — duplicates removed (dup reads: ${dup_rate})"
 }
 
-for cmd in samtools python; do
+for cmd in samtools python3 flock; do
     command -v "$cmd" &>/dev/null || die "'$cmd' not found in PATH."
 done
-python -c "import src.tsv_updater" 2>/dev/null \
+python3 -c "import src.tsv_updater" 2>/dev/null \
     || die "src/tsv_updater.py not importable — run from project root."
 
-if [[ $# -gt 0 ]]; then
-    TSV_FILES=("$@")
-else
-    mapfile -t TSV_FILES < <(find "$TSV_DIR" -maxdepth 1 -name "*.tsv" | sort)
-fi
-[[ ${#TSV_FILES[@]} -eq 0 ]] && die "No .tsv files found in $TSV_DIR"
+collect_tsv_files "$@"
 
+# shellcheck disable=SC2153
 for TSV_FILE in "${TSV_FILES[@]}"; do
     [[ -f "$TSV_FILE" ]] || { warn "$TSV_FILE not found — skipping."; continue; }
     TSV_BASE="${TSV_FILE##*/}"; TSV_BASE="${TSV_BASE%.tsv}"
-    log "Processing: $TSV_FILE"
 
     has_chipseq=false
-
-    while IFS=$'\x01' read -r _cond _acc sample_type _pair _pe _rep \
-                                 _input_acc _fastq _dl _sz _md5 \
-                                 _qc _trimmed _bam _rest; do
+    while IFS=$'\x01' read -r _cond _acc sample_type _rest; do
         [[ -z "$sample_type" ]] && continue
         case "${sample_type,,}" in
             ip|input) has_chipseq=true; break ;;
@@ -110,7 +103,10 @@ for TSV_FILE in "${TSV_FILES[@]}"; do
     LOG="${LOG_DIR}/chipseq/${TSV_BASE}_deduplication.log"
     mkdir -p "$DEDUP_OUT/reports" "$(dirname "$LOG")"
 
-    declare -a _pids=() _ids=()
+    log "Processing: $TSV_FILE | jobs: $MAX_JOBS | threads: $THREADS | mem: $SORT_MEM"
+
+    declare -a _group_order=()
+    declare -A _group_bam=() _group_accs=()
 
     while IFS=$'\x01' read -r cond acc sample_type _pair _pe rep \
                                  _input_acc _fastq _dl _sz _md5 \
@@ -124,22 +120,36 @@ for TSV_FILE in "${TSV_FILES[@]}"; do
         esac
 
         [[ -f "$bam_path" ]] \
-            || die "BAM not found for $acc: '$bam_path' (did script 03 run?)"
+            || die "BAM not found for $acc: '$bam_path' (run 03a first?)"
 
         sample_id="${cond}_${sample_type}_Rep${rep}"
 
-        dedup "$sample_id" "$bam_path" "$acc" "$TSV_FILE" &
-        _pids+=($!) _ids+=("$sample_id")
+        if [[ -z "${_group_bam[$sample_id]:-}" ]]; then
+            _group_order+=("$sample_id")
+            _group_bam["$sample_id"]="$bam_path"
+            _group_accs["$sample_id"]="$acc"
+        else
+            _group_accs["$sample_id"]+=" $acc"
+        fi
+    done < <(tail -n +2 "$TSV_FILE" | tr $'\t' $'\x01')
+
+    declare -a _pids=() _ids=()
+
+    for sample_id in "${_group_order[@]}"; do
+        dedup "$sample_id" "${_group_bam[$sample_id]}" "${_group_accs[$sample_id]}" "$TSV_FILE" &
+        _pids+=("$!") _ids+=("$sample_id")
 
         if (( ${#_pids[@]} >= MAX_JOBS )); then
             wait "${_pids[0]}" || die "Dedup failed: ${_ids[0]}"
             _pids=("${_pids[@]:1}") _ids=("${_ids[@]:1}")
         fi
-    done < <(tail -n +2 "$TSV_FILE" | tr $'\t' $'\x01')
+    done
 
     for i in "${!_pids[@]}"; do
         wait "${_pids[$i]}" || die "Dedup failed: ${_ids[$i]}"
     done
+
+    unset _group_order _group_bam _group_accs
 
     rm -f "${TSV_FILE}.lock"
     success "$TSV_BASE done | log: $LOG"

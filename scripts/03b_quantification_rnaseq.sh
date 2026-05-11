@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 shopt -s nullglob
 
@@ -7,35 +7,20 @@ cd "$(dirname "$SCRIPT_DIR")"
 
 (( BASH_VERSINFO[0] >= 4 )) || { echo "Bash 4+ required (found $BASH_VERSION)" >&2; exit 1; }
 
+# shellcheck disable=SC1091
+source src/pipeline_common.sh
+
+# shellcheck disable=SC2034
 TSV_DIR="data/tsv"
 OUT_DIR="pipeline_outputs"
 LOG_DIR="logs"
 TARGET="hg38"
 CDNA_FASTA="data/genome/fasta/Homo_sapiens.GRCh38.cdna.all.fa.gz"
 SALMON_INDEX="data/genome/index/salmon/salmon_index_${TARGET}"
-THREADS=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+
+_CPUS=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+THREADS="$_CPUS"
 MAX_JOBS=1
-
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
-
-log()     { echo "[$(date '+%H:%M:%S')] $*"; [[ -n "${LOG:-}" ]] && echo "[$(date '+%H:%M:%S')] $*" >> "$LOG"; return 0; }
-die()     { echo -e "${RED}FATAL ERROR:${NC} $*" >&2; [[ -n "${LOG:-}" ]] && echo "FATAL ERROR: $*" >> "$LOG"; exit 1; }
-warn()    { echo -e "${YELLOW}WARNING:${NC} $*" >&2; [[ -n "${LOG:-}" ]] && echo "WARNING: $*" >> "$LOG"; return 0; }
-success() { echo -e "${GREEN}OK${NC} $*"; [[ -n "${LOG:-}" ]] && echo "OK $*" >> "$LOG"; return 0; }
-
-tsv_update() {
-    local tsv="$1" acc="$2"; shift 2
-    flock -x "${tsv}.lock" python src/tsv_updater.py "$tsv" "$acc" "$@"
-}
-
-write_log_header() {
-    local mode="$1" id="$2"
-    { flock 200
-      printf '\n%s\n' '====================================================================='
-      echo "[$(date '+%H:%M:%S')] START ${mode}: ${id}"
-      printf '%s\n' '---------------------------------------------------------------------'
-    } >> "$LOG" 200>> "$LOG"
-}
 
 quant_se() {
     local id="$1" acc="$2" trimmed="$3" tsv="$4"
@@ -68,7 +53,6 @@ quant_se() {
     rm -f "$tmp"
 
     [[ -f "${quant_dir}/quant.sf" ]] || die "Salmon did not produce quant.sf for $id"
-
     tsv_update "$tsv" "$acc" "BAM_Path=${quant_dir}"
     success "$id — quantification done → ${quant_dir}"
 }
@@ -107,27 +91,24 @@ quant_pe() {
     rm -f "$tmp"
 
     [[ -f "${quant_dir}/quant.sf" ]] || die "Salmon did not produce quant.sf for $id"
-
     tsv_update "$tsv" "$acc1" "BAM_Path=${quant_dir}"
     tsv_update "$tsv" "$acc2" "BAM_Path=${quant_dir}"
     success "$id — quantification done → ${quant_dir}"
 }
 
-for cmd in salmon python; do
+for cmd in salmon python3 flock; do
     command -v "$cmd" &>/dev/null || die "'$cmd' not found in PATH."
 done
-python -c "import src.tsv_updater" 2>/dev/null \
+python3 -c "import src.tsv_updater" 2>/dev/null \
     || die "src/tsv_updater.py not importable — run from project root."
 
 mkdir -p "$(dirname "$SALMON_INDEX")" "$LOG_DIR"
-
 if [[ ! -d "$SALMON_INDEX" ]]; then
     [[ -f "$CDNA_FASTA" ]] || die \
         "cDNA FASTA not found: ${CDNA_FASTA}
-        Download with:
-          wget -P data/genome/fasta/ \\
-            'https://ftp.ensembl.org/pub/current_fasta/homo_sapiens/cdna/Homo_sapiens.GRCh38.cdna.all.fa.gz'"
-
+Download with:
+  wget -P data/genome/fasta/ \\
+    'https://ftp.ensembl.org/pub/current_fasta/homo_sapiens/cdna/Homo_sapiens.GRCh38.cdna.all.fa.gz'"
     log "Building Salmon index for $TARGET..."
     salmon index \
         --transcripts "$CDNA_FASTA" \
@@ -140,21 +121,16 @@ else
     log "Salmon index found — skipping build."
 fi
 
-if [[ $# -gt 0 ]]; then
-    TSV_FILES=("$@")
-else
-    mapfile -t TSV_FILES < <(find "$TSV_DIR" -maxdepth 1 -name "*.tsv" | sort)
-fi
-[[ ${#TSV_FILES[@]} -eq 0 ]] && die "No .tsv files found in $TSV_DIR"
+collect_tsv_files "$@"
 
+# shellcheck disable=SC2153
 for TSV_FILE in "${TSV_FILES[@]}"; do
     [[ -f "$TSV_FILE" ]] || { warn "$TSV_FILE not found — skipping."; continue; }
     TSV_BASE="${TSV_FILE##*/}"; TSV_BASE="${TSV_BASE%.tsv}"
 
     has_rna=false
     declare -a se_order=()
-    declare -A se_acc=() se_trimmed=()
-    declare -A pe_r1=() pe_r2=() pe_acc1=() pe_acc2=()
+    declare -A se_acc=() se_trimmed=() pe_r1=() pe_r2=() pe_acc1=() pe_acc2=()
 
     line_num=1
     while IFS=$'\x01' read -r cond acc sample_type pair_id paired_end rep \
@@ -167,7 +143,7 @@ for TSV_FILE in "${TSV_FILES[@]}"; do
         has_rna=true
 
         [[ -f "$trimmed_path" ]] \
-            || die "Line $line_num: Trimmed_Path not found → '$trimmed_path' (run script 02 first?)"
+            || die "Line $line_num: Trimmed_Path not found → '$trimmed_path' (run 02 first?)"
 
         group="${cond}_RNA_Rep${rep}"
         if [[ "${paired_end,,}" == "true" ]]; then
@@ -188,16 +164,16 @@ for TSV_FILE in "${TSV_FILES[@]}"; do
         continue
     fi
 
-    QUANT_OUT="${OUT_DIR}/rnaseq/${TSV_BASE}/07_quantification"
+    QUANT_OUT="${OUT_DIR}/rnaseq/${TSV_BASE}/03_quantification"
     LOG="${LOG_DIR}/rnaseq/${TSV_BASE}_quantification.log"
     mkdir -p "$QUANT_OUT" "$(dirname "$LOG")"
 
-    log "Processing: $TSV_FILE"
+    log "Processing: $TSV_FILE | jobs: $MAX_JOBS | threads: $THREADS"
 
     declare -a _pids=() _ids=()
     for group in "${se_order[@]}"; do
         quant_se "$group" "${se_acc[$group]}" "${se_trimmed[$group]}" "$TSV_FILE" &
-        _pids+=($!) _ids+=("$group")
+        _pids+=("$!") _ids+=("$group")
         if (( ${#_pids[@]} >= MAX_JOBS )); then
             wait "${_pids[0]}" || die "SE quant failed: ${_ids[0]}"
             _pids=("${_pids[@]:1}") _ids=("${_ids[@]:1}")
@@ -215,7 +191,7 @@ for TSV_FILE in "${TSV_FILES[@]}"; do
             "${pe_r1[$group]}" "${pe_r2[$group]}" \
             "${pe_acc1[$group]}" "${pe_acc2[$group]}" \
             "$TSV_FILE" &
-        _pids+=($!) _ids+=("$group")
+        _pids+=("$!") _ids+=("$group")
         if (( ${#_pids[@]} >= MAX_JOBS )); then
             wait "${_pids[0]}" || die "PE quant failed: ${_ids[0]}"
             _pids=("${_pids[@]:1}") _ids=("${_ids[@]:1}")

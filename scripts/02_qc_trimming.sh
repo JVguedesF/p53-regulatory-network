@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 shopt -s nullglob
 
@@ -7,35 +7,22 @@ cd "$(dirname "$SCRIPT_DIR")"
 
 (( BASH_VERSINFO[0] >= 4 )) || { echo "Bash 4+ required (found $BASH_VERSION)" >&2; exit 1; }
 
+# shellcheck disable=SC1091
+source src/pipeline_common.sh
+
+# shellcheck disable=SC2034
 TSV_DIR="data/tsv"
 OUT_DIR="pipeline_outputs"
 LOG_DIR="logs"
 TRIM_QUALITY=20
-MAX_JOBS=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
-log()     { echo "[$(date '+%H:%M:%S')] $*"; [[ -n "${LOG:-}" ]] && echo "[$(date '+%H:%M:%S')] $*" >> "$LOG"; return 0; }
-die()     { echo -e "${RED}FATAL ERROR:${NC} $*" >&2; [[ -n "${LOG:-}" ]] && echo "FATAL ERROR: $*" >> "$LOG"; exit 1; }
-warn()    { echo -e "${YELLOW}WARNING:${NC} $*" >&2; [[ -n "${LOG:-}" ]] && echo "WARNING: $*" >> "$LOG"; return 0; }
-success() { echo -e "${GREEN}OK${NC} $*"; [[ -n "${LOG:-}" ]] && echo "OK $*" >> "$LOG"; return 0; }
-
-tsv_update() {
-    local tsv="$1" acc="$2"; shift 2
-    flock -x "${tsv}.lock" python src/tsv_updater.py "$tsv" "$acc" "$@"
-}
-
-write_log_header() {
-    local mode="$1" id="$2" desc="$3"
-    { flock 200
-      printf '\n%s\n' '====================================================================='
-      echo "[$(date '+%H:%M:%S')] START ${mode}: ${id} | ${desc}"
-      printf '%s\n' '---------------------------------------------------------------------'
-    } >>"$LOG" 200>>"$LOG"
-}
+_CPUS=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+MAX_JOBS=$(( _CPUS / 2 < 1 ? 1 : _CPUS / 2 ))
+TRIM_CORES=2
 
 move_reports() {
     find "$TRIMMED_OUT" -maxdepth 1 -name "${1}*_trimming_report.txt" \
-        -exec mv {} "$TRIM_REPORTS"/ \;
+        -exec mv -f {} "$TRIM_REPORTS"/ \;
 }
 
 trim_se() {
@@ -49,19 +36,22 @@ trim_se() {
     fi
     [[ -f "$trimmed" ]] && warn "$trimmed corrupt — reprocessing."
 
-    log "SE trimming: $id"; write_log_header "SE" "$id" "$(basename "$fastq")"
+    log "SE trimming: $id"
+    write_log_header "SE" "$id" "$(basename "$fastq")"
 
     local tmp; tmp=$(mktemp)
-    trim_galore --quality "$TRIM_QUALITY" --output_dir "$TRIMMED_OUT" "$fastq" >"$tmp" 2>&1 \
-    || { echo "[$(date '+%H:%M:%S')] ERROR $id" >>"$LOG"; cat "$tmp" >>"$LOG"; rm -f "$tmp"; exit 1; }
+    trim_galore --quality "$TRIM_QUALITY" --cores "$TRIM_CORES" \
+        --output_dir "$TRIMMED_OUT" "$fastq" > "$tmp" 2>&1 \
+    || { echo "[$(date '+%H:%M:%S')] ERROR $id" >> "$LOG"; cat "$tmp" >> "$LOG"; rm -f "$tmp"; exit 1; }
 
     { flock 200
       cat "$tmp"
       cat "$TRIMMED_OUT/${acc}"*_trimming_report.txt 2>/dev/null || true
       echo "[$(date '+%H:%M:%S')] END SE: $id"
-    } >>"$LOG" 200>>"$LOG"
+    } >> "$LOG" 200>> "$LOG"
 
-    move_reports "$acc"; rm -f "$tmp"
+    move_reports "$acc"
+    rm -f "$tmp"
     tsv_update "$tsv" "$acc" "QC_Status=PASS" "Trimmed_Path=$trimmed"
 }
 
@@ -83,39 +73,38 @@ trim_pe() {
     write_log_header "PE" "$id" "$(basename "$r1") + $(basename "$r2")"
 
     local tmp; tmp=$(mktemp)
-    trim_galore --paired --quality "$TRIM_QUALITY" --output_dir "$TRIMMED_OUT" "$r1" "$r2" >"$tmp" 2>&1 \
-    || { echo "[$(date '+%H:%M:%S')] ERROR $id" >>"$LOG"; cat "$tmp" >>"$LOG"; rm -f "$tmp"; exit 1; }
+    trim_galore --paired --quality "$TRIM_QUALITY" --cores "$TRIM_CORES" \
+        --output_dir "$TRIMMED_OUT" "$r1" "$r2" > "$tmp" 2>&1 \
+    || { echo "[$(date '+%H:%M:%S')] ERROR $id" >> "$LOG"; cat "$tmp" >> "$LOG"; rm -f "$tmp"; exit 1; }
 
     { flock 200
       cat "$tmp"
       cat "$TRIMMED_OUT/${acc1}"*_trimming_report.txt 2>/dev/null || true
       cat "$TRIMMED_OUT/${acc2}"*_trimming_report.txt 2>/dev/null || true
       echo "[$(date '+%H:%M:%S')] END PE: $id"
-    } >>"$LOG" 200>>"$LOG"
+    } >> "$LOG" 200>> "$LOG"
 
-    move_reports "$acc1"; move_reports "$acc2"; rm -f "$tmp"
+    move_reports "$acc1"
+    move_reports "$acc2"
+    rm -f "$tmp"
     tsv_update "$tsv" "$acc1" "QC_Status=PASS" "Trimmed_Path=$out1"
     tsv_update "$tsv" "$acc2" "QC_Status=PASS" "Trimmed_Path=$out2"
 }
 
-for cmd in fastqc trim_galore multiqc gzip python; do
+for cmd in fastqc trim_galore multiqc gzip python3 flock; do
     command -v "$cmd" &>/dev/null || die "'$cmd' not found in PATH."
 done
-python -c "import src.tsv_updater" 2>/dev/null \
+python3 -c "import src.tsv_updater" 2>/dev/null \
     || die "src/tsv_updater.py not importable — run from project root."
 
-if [[ $# -gt 0 ]]; then
-    TSV_FILES=("$@")
-else
-    mapfile -t TSV_FILES < <(find "$TSV_DIR" -maxdepth 1 -name "*.tsv" | sort)
-fi
-[[ ${#TSV_FILES[@]} -eq 0 ]] && die "No .tsv files found in $TSV_DIR"
+collect_tsv_files "$@"
 
+# shellcheck disable=SC2153
 for TSV_FILE in "${TSV_FILES[@]}"; do
     [[ -f "$TSV_FILE" ]] || { warn "$TSV_FILE not found — skipping."; continue; }
     TSV_BASE="${TSV_FILE##*/}"; TSV_BASE="${TSV_BASE%.tsv}"
-    
-    for TARGET_ANALYSIS in "chipseq" "rnaseq"; do
+
+    for TARGET_ANALYSIS in chipseq rnaseq; do
         declare -a s_raw_fastq=() se_order=()
         declare -A se_acc=() se_fastq=() pe_r1=() pe_r2=() pe_acc1=() pe_acc2=()
         ANALYSIS=""
@@ -132,7 +121,7 @@ for TSV_FILE in "${TSV_FILES[@]}"; do
                 rna)      row_type="rnaseq"  ;;
                 *) die "Line $line_num: unknown Sample_Type='$sample_type'." ;;
             esac
-            
+
             [[ "$row_type" != "$TARGET_ANALYSIS" ]] && continue
             ANALYSIS="$row_type"
 
@@ -155,8 +144,6 @@ for TSV_FILE in "${TSV_FILES[@]}"; do
 
         [[ -z "$ANALYSIS" ]] && continue
 
-        log "Processing: $TSV_FILE | Type: $ANALYSIS | jobs: $MAX_JOBS"
-
         BASE="${OUT_DIR}/${ANALYSIS}/${TSV_BASE}"
         QC_RAW="${BASE}/01_qc/fastqc_raw"
         QC_TRIMMED="${BASE}/01_qc/fastqc_trimmed"
@@ -167,20 +154,22 @@ for TSV_FILE in "${TSV_FILES[@]}"; do
         mkdir -p "$QC_RAW" "$QC_TRIMMED" "$TRIM_REPORTS" "$MULTIQC_OUT" \
                  "$TRIMMED_OUT" "$(dirname "$LOG")"
 
+        log "Processing: $TSV_FILE | Type: $ANALYSIS | jobs: $MAX_JOBS | cores/job: $TRIM_CORES"
+
         declare -a missing_raw=()
         for f in "${s_raw_fastq[@]}"; do
             base=$(basename "$f" .fastq.gz)
             [[ -f "$QC_RAW/${base}_fastqc.html" ]] || missing_raw+=("$f")
         done
-        if [[ ${#missing_raw[@]} -gt 0 ]]; then
-            fastqc --quiet --threads "$MAX_JOBS" "${missing_raw[@]}" --outdir "$QC_RAW" \
-                || die "Raw FastQC failed."
-        fi
+        (( ${#missing_raw[@]} > 0 )) && {
+            fastqc --quiet --threads "$_CPUS" "${missing_raw[@]}" \
+                --outdir "$QC_RAW" 2>/dev/null || die "Raw FastQC failed."
+        }
 
         declare -a _pids=() _ids=()
         for group in "${se_order[@]}"; do
             trim_se "$group" "${se_acc[$group]}" "${se_fastq[$group]}" "$TSV_FILE" &
-            _pids+=($!) _ids+=("$group")
+            _pids+=("$!") _ids+=("$group")
             if (( ${#_pids[@]} >= MAX_JOBS )); then
                 wait "${_pids[0]}" || die "SE trim failed: ${_ids[0]}"
                 _pids=("${_pids[@]:1}") _ids=("${_ids[@]:1}")
@@ -196,7 +185,7 @@ for TSV_FILE in "${TSV_FILES[@]}"; do
         for group in "${!pe_r1[@]}"; do
             trim_pe "$group" "${pe_r1[$group]}" "${pe_r2[$group]}" \
                     "${pe_acc1[$group]}" "${pe_acc2[$group]}" "$TSV_FILE" &
-            _pids+=($!) _ids+=("$group")
+            _pids+=("$!") _ids+=("$group")
             if (( ${#_pids[@]} >= MAX_JOBS )); then
                 wait "${_pids[0]}" || die "PE trim failed: ${_ids[0]}"
                 _pids=("${_pids[@]:1}") _ids=("${_ids[@]:1}")
@@ -209,19 +198,21 @@ for TSV_FILE in "${TSV_FILES[@]}"; do
             base=$(basename "$f" .fq.gz)
             [[ -f "$QC_TRIMMED/${base}_fastqc.html" ]] || missing_trimmed+=("$f")
         done
-        if [[ ${#missing_trimmed[@]} -gt 0 ]]; then
-            fastqc --quiet --threads "$MAX_JOBS" "${missing_trimmed[@]}" --outdir "$QC_TRIMMED" \
-                || die "Trimmed FastQC failed."
-        fi
+        (( ${#missing_trimmed[@]} > 0 )) && {
+            fastqc --quiet --threads "$_CPUS" "${missing_trimmed[@]}" \
+                --outdir "$QC_TRIMMED" 2>/dev/null || die "Trimmed FastQC failed."
+        }
 
         multiqc "$QC_RAW" "$QC_TRIMMED" "$TRIM_REPORTS" \
             -o "$MULTIQC_OUT" --filename "multiqc_${TSV_BASE}" \
-            --title "${TSV_BASE} — ${ANALYSIS}" --force >/dev/null 2>&1
+            --title "${TSV_BASE} — ${ANALYSIS}" --force >/dev/null 2>&1 \
+            || warn "MultiQC failed."
 
         success "$TSV_BASE ($ANALYSIS) done | log: $LOG"
 
         unset s_raw_fastq se_order se_acc se_fastq pe_r1 pe_r2 pe_acc1 pe_acc2
     done
+
     rm -f "${TSV_FILE}.lock"
 done
 
