@@ -1,7 +1,40 @@
+paths:
+  raw: data/raw
+  tsv: data/tsv
+  genome: data/genome
+  pipeline_outputs: pipeline_outputs
+  results: results
+  logs: logs
+
+genome:
+  target: hg38
+  release: current
+  fasta: data/genome/fasta/hg38.fa
+  cdna_fasta: data/genome/fasta/Homo_sapiens.GRCh38.cdna.all.fa.gz
+  bowtie2_index: data/genome/index/bowtie2/genome_index_hg38
+  salmon_index: data/genome/index/salmon/salmon_index_hg38
+
+resources:
+  threads: 4
+  max_jobs: 2
+
+trimming:
+  quality: 20
+
+analysis:
+  promoter_window: 3000
+  macs2_qvalue: 0.05
+  deseq2_lfc_threshold: 1.0
+  deseq2_padj_threshold: 0.05
+  cancer_type: TCGA-LUAD
+
+integration:
+  pairs_file: config/integration_pairs.csv
+
 downloads:
   PRJNA203360:
-    description: "p53 ChIP-seq MCF7 (Nutlin-3a)"
-    condition_name: "p53_ChIP_MCF7"
+    description: "p53 ChIP-seq MCF7 treated with Nutlin-3a"
+    condition_name: "MCF7_Nutlin_p53"
     overrides:
       SRR856298: "Input"
       SRR856299: "Input"
@@ -12,7 +45,7 @@ downloads:
       SRR866627: 1
 
   PRJNA203359:
-    description: "RNA-seq MCF7 (Nutlin-3a)"
+    description: "RNA-seq MCF7 control vs Nutlin-3a"
     condition_name: "MCF7"
     conditions:
       SRR867127: "MCF7_control"
@@ -26,9 +59,11 @@ downloads:
       SRR867130: 2
 
   ENCSR000DWJ:
-    description: "H3K4me3 ChIP-seq (MCF-7)"
+    description: "H3K4me3 ChIP-seq MCF7"
+    condition_name: "MCF7_H3K4me3"
     overrides: {}
 
   ENCSR000EWR:
-    description: "H3K27ac ChIP-seq (MCF-7)"
+    description: "H3K27ac ChIP-seq MCF7"
+    condition_name: "MCF7_H3K27ac"
     overrides: {}

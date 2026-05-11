@@ -1,45 +1,26 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 shopt -s nullglob
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [[ -f "${SCRIPT_DIR}/config/config.yaml" ]]; then
-    cd "$SCRIPT_DIR"
-else
-    cd "$(dirname "$SCRIPT_DIR")"
-fi
+cd "$(dirname "$SCRIPT_DIR")"
 
 (( BASH_VERSINFO[0] >= 4 )) || { echo "Bash 4+ required (found $BASH_VERSION)" >&2; exit 1; }
 
+# shellcheck disable=SC1091
+source src/pipeline_common.sh
+
+# shellcheck disable=SC2034
 TSV_DIR="data/tsv"
 OUT_DIR="pipeline_outputs"
 LOG_DIR="logs"
 TARGET="hg38"
 GENOME_FASTA="data/genome/fasta/${TARGET}.fa"
 INDEX="data/genome/index/bowtie2/genome_index_${TARGET}"
-THREADS=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+
+_CPUS=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+THREADS="$_CPUS"
 MAX_JOBS=1
-
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
-
-log()     { echo "[$(date '+%H:%M:%S')] $*"; if [[ -n "${LOG:-}" ]]; then echo "[$(date '+%H:%M:%S')] $*" >> "$LOG"; fi; }
-die()     { echo -e "${RED}FATAL ERROR:${NC} $*" >&2; if [[ -n "${LOG:-}" ]]; then echo "FATAL ERROR: $*" >> "$LOG"; fi; exit 1; }
-warn()    { echo -e "${YELLOW}WARNING:${NC} $*" >&2; if [[ -n "${LOG:-}" ]]; then echo "WARNING: $*" >> "$LOG"; fi; }
-success() { echo -e "${GREEN}OK${NC} $*"; if [[ -n "${LOG:-}" ]]; then echo "OK $*" >> "$LOG"; fi; }
-
-tsv_update() {
-    local tsv="$1" acc="$2"; shift 2
-    flock -x "${tsv}.lock" python src/tsv_updater.py "$tsv" "$acc" "$@"
-}
-
-write_log_header() {
-    local mode="$1" id="$2" desc="$3"
-    { flock 200
-      printf '\n%s\n' '====================================================================='
-      echo "[$(date '+%H:%M:%S')] START ${mode}: ${id} | ${desc}"
-      printf '%s\n' '---------------------------------------------------------------------'
-    } >>"$LOG" 200>>"$LOG"
-}
 
 align_se() {
     local id="$1" acc="$2" trimmed="$3" tsv="$4"
@@ -53,22 +34,24 @@ align_se() {
         tsv_update "$tsv" "$acc" "BAM_Path=$bam" "Alignment_Rate=${rate}%"
         return 0
     fi
-    log "SE alignment: $id"; write_log_header "ALIGN_SE" "$id" "$(basename "$trimmed")"
+
+    log "SE alignment: $id"
+    write_log_header "ALIGN_SE" "$id" "$(basename "$trimmed")"
 
     local tmp; tmp=$(mktemp)
     (
-        bowtie2 -p "$THREADS" -x "$INDEX" -U "$trimmed" 2>"$report" |
-        samtools view -bS - |
-        samtools sort -@ "$THREADS" -o "$bam" &&
-        samtools index "$bam"
-    ) >"$tmp" 2>&1 \
-    || { echo "[$(date '+%H:%M:%S')] ERROR $id" >>"$LOG"; cat "$tmp" >>"$LOG"; rm -f "$tmp"; exit 1; }
+        bowtie2 -p "$THREADS" -x "$INDEX" -U "$trimmed" 2>"$report" \
+            | samtools view -bS - \
+            | samtools sort -@ "$THREADS" -o "$bam" \
+        && samtools index "$bam"
+    ) > "$tmp" 2>&1 \
+    || { echo "[$(date '+%H:%M:%S')] ERROR $id" >> "$LOG"; cat "$tmp" >> "$LOG"; rm -f "$tmp"; exit 1; }
 
     { flock 200
       cat "$tmp"
       cat "$report" 2>/dev/null || true
       echo "[$(date '+%H:%M:%S')] END ALIGN_SE: $id"
-    } >>"$LOG" 200>>"$LOG"
+    } >> "$LOG" 200>> "$LOG"
     rm -f "$tmp"
 
     local rate; rate=$(grep "overall alignment rate" "$report" | grep -oP '[0-9.]+(?=%)' || echo "N/A")
@@ -88,22 +71,24 @@ align_pe() {
         tsv_update "$tsv" "$acc2" "BAM_Path=$bam" "Alignment_Rate=${rate}%"
         return 0
     fi
-    log "PE alignment: $id"; write_log_header "ALIGN_PE" "$id" "${acc_base} (paired)"
+
+    log "PE alignment: $id"
+    write_log_header "ALIGN_PE" "$id" "${acc_base} (paired)"
 
     local tmp; tmp=$(mktemp)
     (
-        bowtie2 -p "$THREADS" -x "$INDEX" -1 "$r1" -2 "$r2" 2>"$report" |
-        samtools view -bS - |
-        samtools sort -@ "$THREADS" -o "$bam" &&
-        samtools index "$bam"
-    ) >"$tmp" 2>&1 \
-    || { echo "[$(date '+%H:%M:%S')] ERROR $id" >>"$LOG"; cat "$tmp" >>"$LOG"; rm -f "$tmp"; exit 1; }
+        bowtie2 -p "$THREADS" -x "$INDEX" -1 "$r1" -2 "$r2" 2>"$report" \
+            | samtools view -bS - \
+            | samtools sort -@ "$THREADS" -o "$bam" \
+        && samtools index "$bam"
+    ) > "$tmp" 2>&1 \
+    || { echo "[$(date '+%H:%M:%S')] ERROR $id" >> "$LOG"; cat "$tmp" >> "$LOG"; rm -f "$tmp"; exit 1; }
 
     { flock 200
       cat "$tmp"
       cat "$report" 2>/dev/null || true
       echo "[$(date '+%H:%M:%S')] END ALIGN_PE: $id"
-    } >>"$LOG" 200>>"$LOG"
+    } >> "$LOG" 200>> "$LOG"
     rm -f "$tmp"
 
     local rate; rate=$(grep "overall alignment rate" "$report" | grep -oP '[0-9.]+(?=%)' || echo "N/A")
@@ -111,33 +96,28 @@ align_pe() {
     tsv_update "$tsv" "$acc2" "BAM_Path=$bam" "Alignment_Rate=${rate}%"
 }
 
-for cmd in bowtie2 samtools python; do
+for cmd in bowtie2 samtools python3 flock; do
     command -v "$cmd" &>/dev/null || die "'$cmd' not found in PATH."
 done
-python -c "import src.tsv_updater" 2>/dev/null \
+python3 -c "import src.tsv_updater" 2>/dev/null \
     || die "src/tsv_updater.py not importable — run from project root."
 
 mkdir -p "$LOG_DIR"
 if [[ ! -f "${INDEX}.1.bt2" ]]; then
-    log "Building genome index for $TARGET..."
+    log "Building bowtie2 index for $TARGET..."
     mkdir -p "$(dirname "$INDEX")"
     bowtie2-build "$GENOME_FASTA" "$INDEX" 2>&1 | tee -a "$LOG_DIR/genome_index.log" \
-        || die "Failed to build genome index."
+        || die "Failed to build bowtie2 index."
 else
-    log "Genome index found — skipping build."
+    log "Bowtie2 index found — skipping build."
 fi
 
-if [[ $# -gt 0 ]]; then
-    TSV_FILES=("$@")
-else
-    mapfile -t TSV_FILES < <(find "$TSV_DIR" -maxdepth 1 -name "*.tsv" | sort)
-fi
-[[ ${#TSV_FILES[@]} -eq 0 ]] && die "No .tsv files found in $TSV_DIR"
+collect_tsv_files "$@"
 
+# shellcheck disable=SC2153
 for TSV_FILE in "${TSV_FILES[@]}"; do
-    [[ -f "$TSV_FILE" ]] || { log "Skipping missing: $TSV_FILE"; continue; }
+    [[ -f "$TSV_FILE" ]] || { warn "$TSV_FILE not found — skipping."; continue; }
     TSV_BASE="${TSV_FILE##*/}"; TSV_BASE="${TSV_BASE%.tsv}"
-    log "Processing: $TSV_FILE"
 
     ANALYSIS=""
     declare -a se_order=()
@@ -146,20 +126,18 @@ for TSV_FILE in "${TSV_FILES[@]}"; do
 
     line_num=1
     while IFS=$'\x01' read -r cond acc sample_type pair_id paired_end rep \
-                               _input_acc _fastq_path _dl _size _md5 \
+                               _input_acc _fastq _dl _size _md5 \
                                _qc trimmed_path _rest; do
         (( line_num++ ))
         [[ -z "$cond" || -z "$acc" || -z "$sample_type" ]] \
             && die "Line $line_num: missing required columns."
 
         case "${sample_type,,}" in
-            ip|input) row_type="chipseq" ;;
-            rna)
-                log "Skipping RNA row $acc — STAR not implemented in this script."
-                continue ;;
+            ip|input) ;;
+            rna) log "Skipping RNA row $acc — use 03b for RNA-seq."; continue ;;
             *) die "Line $line_num: unknown Sample_Type='$sample_type'." ;;
         esac
-        [[ -z "$ANALYSIS" ]] && ANALYSIS="$row_type"
+        [[ -z "$ANALYSIS" ]] && ANALYSIS="chipseq"
 
         [[ -f "$trimmed_path" ]] \
             || die "Line $line_num: Trimmed_Path not found → '$trimmed_path' (run 02 first?)"
@@ -180,18 +158,19 @@ for TSV_FILE in "${TSV_FILES[@]}"; do
     done < <(tail -n +2 "$TSV_FILE" | tr $'\t' $'\x01')
 
     [[ -z "$ANALYSIS" ]] && { log "No ChIP-seq rows in $TSV_FILE — skipping."; continue; }
-    log "Type: $ANALYSIS | jobs: $MAX_JOBS"
 
-    BASE="${OUT_DIR}/${ANALYSIS}/${TSV_BASE}"
+    BASE="${OUT_DIR}/chipseq/${TSV_BASE}"
     ALIGN_OUT="${BASE}/03_alignment"
     ALIGN_REPORTS="${ALIGN_OUT}/reports"
-    LOG="${LOG_DIR}/${ANALYSIS}/${TSV_BASE}_alignment.log"
+    LOG="${LOG_DIR}/chipseq/${TSV_BASE}_alignment.log"
     mkdir -p "$ALIGN_OUT" "$ALIGN_REPORTS" "$(dirname "$LOG")"
+
+    log "Processing: $TSV_FILE | jobs: $MAX_JOBS | threads: $THREADS"
 
     declare -a _pids=() _ids=()
     for group in "${se_order[@]}"; do
         align_se "$group" "${se_acc[$group]}" "${se_trimmed[$group]}" "$TSV_FILE" &
-        _pids+=($!) _ids+=("$group")
+        _pids+=("$!") _ids+=("$group")
         if (( ${#_pids[@]} >= MAX_JOBS )); then
             wait "${_pids[0]}" || die "SE alignment failed: ${_ids[0]}"
             _pids=("${_pids[@]:1}") _ids=("${_ids[@]:1}")
@@ -209,7 +188,7 @@ for TSV_FILE in "${TSV_FILES[@]}"; do
             "${pe_r1[$group]}" "${pe_r2[$group]}" \
             "${pe_acc1[$group]}" "${pe_acc2[$group]}" \
             "${pe_acc_base[$group]}" "$TSV_FILE" &
-        _pids+=($!) _ids+=("$group")
+        _pids+=("$!") _ids+=("$group")
         if (( ${#_pids[@]} >= MAX_JOBS )); then
             wait "${_pids[0]}" || die "PE alignment failed: ${_ids[0]}"
             _pids=("${_pids[@]:1}") _ids=("${_ids[@]:1}")
@@ -223,4 +202,4 @@ for TSV_FILE in "${TSV_FILES[@]}"; do
     unset se_order se_acc se_trimmed pe_r1 pe_r2 pe_acc1 pe_acc2 pe_acc_base
 done
 
-success "Alignment pipeline complete!"
+success "ChIP-seq alignment pipeline complete!"

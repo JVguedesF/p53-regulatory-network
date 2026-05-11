@@ -248,3 +248,4 @@ results/tables/*.tsv
 
 tests/
 .lintr
+results/

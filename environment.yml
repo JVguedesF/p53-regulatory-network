@@ -14,6 +14,7 @@ dependencies:
   - tqdm
   - pytest
   - biopython
+  - plotly
 
   # ChIP/RNA-seq
   - fastqc
@@ -51,7 +52,20 @@ dependencies:
   - bioconductor-rtracklayer
   - bioconductor-complexheatmap
   - bioconductor-tcgabiolinks
+  - bioconductor-summarizedexperiment
+  - bioconductor-annotationdbi
+  - bioconductor-genomeinfodb
+  - bioconductor-tximport
 
   # R — CRAN
   - r-survminer
   - r-ggvenndiagram
+  - r-ggplot2
+  - r-dplyr
+  - r-patchwork
+  - r-scales
+  - r-ggrepel
+  - r-pheatmap
+  - r-survival
+  - r-ggupset
+  - r-igraph
