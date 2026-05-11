@@ -1,0 +1,2 @@
+chip_dataset,rna_dataset,chip_tsv,rnaseq_tsv
+PRJNA203360,PRJNA203359,data/tsv/PRJNA203360.tsv,data/tsv/PRJNA203359.tsv
