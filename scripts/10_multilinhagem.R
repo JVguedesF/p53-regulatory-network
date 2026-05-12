@@ -1,3 +1,5 @@
+#!/usr/bin/env Rscript
+
 suppressPackageStartupMessages({
     library(dplyr)
     library(ggplot2)
@@ -24,28 +26,23 @@ read_tsv_safe <- function(path) {
 }
 
 save_pdf <- function(expr, path, width = 8, height = 6) {
-    pdf(NULL)
     pdf(path, width = width, height = height)
     on.exit(dev.off())
     force(expr)
 }
 
 get_sym_col <- function(df) {
-    candidates <- c("SYMBOL", "geneSymbol")
-    found <- intersect(candidates, colnames(df))
+    found <- intersect(c("SYMBOL", "SYMBOL.x", "geneSymbol"), colnames(df))
     if (length(found) == 0L) NULL else found[1]
 }
 
-target_files <- list.files(
-    integration_root,
-    pattern      = "direct_targets_all\\.tsv$",
-    recursive    = TRUE,
-    full.names   = TRUE
+target_files <- list.files(integration_root,
+    pattern = "direct_targets_all\\.tsv$",
+    recursive = TRUE, full.names = TRUE
 )
 
 if (length(target_files) == 0L) {
-    stop(
-        "No direct_targets_all.tsv files found under: ", integration_root,
+    stop("No direct_targets_all.tsv files found under: ", integration_root,
         "\nRun 09_integration.R for each ChIP+RNA pair first.",
         call. = FALSE
     )
@@ -58,7 +55,6 @@ runs <- setNames(target_files, basename(dirname(target_files)))
 targets_long <- do.call(rbind, lapply(names(runs), function(run_label) {
     df <- read_tsv_safe(runs[[run_label]])
     sym_col <- get_sym_col(df)
-
     gene_id_col <- if ("gene_id" %in% colnames(df)) "gene_id" else colnames(df)[1]
     gene_sym <- if (!is.null(sym_col)) df[[sym_col]] else df[[gene_id_col]]
 
@@ -94,21 +90,22 @@ for (i in seq_len(nrow(targets_long))) {
 }
 
 n_runs_per_gene <- rowSums(!is.na(conservation_mat))
-
 conserved_targets <- names(n_runs_per_gene[n_runs_per_gene == length(run_labels)])
+context_specific <- names(n_runs_per_gene[n_runs_per_gene == 1L])
+
 message(sprintf(
     "[conservation] Targets shared across ALL %d run(s): %d",
     length(run_labels), length(conserved_targets)
 ))
-
-context_specific <- names(n_runs_per_gene[n_runs_per_gene == 1L])
-message(sprintf("[conservation] Context-specific targets (1 run only): %d", length(context_specific)))
+message(sprintf(
+    "[conservation] Context-specific targets (1 run only): %d",
+    length(context_specific)
+))
 
 known_p53 <- c(
     "CDKN1A", "BAX", "MDM2", "BBC3", "GADD45A",
     "TIGAR", "GDF15", "PUMA", "TP53I3", "SESN1"
 )
-
 known_found <- intersect(known_p53, all_symbols)
 known_conserved <- intersect(known_p53, conserved_targets)
 
@@ -122,8 +119,7 @@ conservation_df <- data.frame(
     n_runs = n_runs_per_gene,
     known_p53 = rownames(conservation_mat) %in% known_p53,
     conservation_mat,
-    check.names = FALSE,
-    stringsAsFactors = FALSE
+    check.names = FALSE, stringsAsFactors = FALSE
 )
 conservation_df <- conservation_df[order(-conservation_df$n_runs, conservation_df$symbol), ]
 
@@ -131,15 +127,11 @@ write.table(conservation_df,
     file.path(out_dir, "target_conservation_matrix.tsv"),
     sep = "\t", quote = FALSE, row.names = FALSE
 )
-
-write.table(
-    conservation_df[conservation_df$symbol %in% conserved_targets, ],
+write.table(conservation_df[conservation_df$symbol %in% conserved_targets, ],
     file.path(out_dir, "conserved_targets_all_runs.tsv"),
     sep = "\t", quote = FALSE, row.names = FALSE
 )
-
-write.table(
-    conservation_df[conservation_df$symbol %in% context_specific, ],
+write.table(conservation_df[conservation_df$symbol %in% context_specific, ],
     file.path(out_dir, "context_specific_targets.tsv"),
     sep = "\t", quote = FALSE, row.names = FALSE
 )
@@ -156,8 +148,7 @@ run_summary <- do.call(rbind, lapply(run_labels, function(r) {
     )
 }))
 
-write.table(run_summary,
-    file.path(out_dir, "per_run_summary.tsv"),
+write.table(run_summary, file.path(out_dir, "per_run_summary.tsv"),
     sep = "\t", quote = FALSE, row.names = FALSE
 )
 
@@ -174,9 +165,7 @@ save_pdf(
             scale_fill_manual(values = c(activated = "#E74C3C", repressed = "#2980B9")) +
             labs(
                 title = "Direct p53 Targets per Integration Run",
-                x     = NULL,
-                y     = "Number of genes",
-                fill  = NULL
+                x = NULL, y = "Number of genes", fill = NULL
             ) +
             theme_bw(base_size = 12) +
             theme(
@@ -190,19 +179,14 @@ save_pdf(
 
 message("[plots] Histogram: conservation across runs")
 
-hist_df <- data.frame(n_runs = n_runs_per_gene)
-
 save_pdf(
     print(
-        ggplot(hist_df, aes(x = n_runs)) +
-            geom_histogram(
-                binwidth = 1, fill = "#2ECC71", color = "white", boundary = 0.5
-            ) +
+        ggplot(data.frame(n_runs = n_runs_per_gene), aes(x = n_runs)) +
+            geom_histogram(binwidth = 1, fill = "#2ECC71", color = "white", boundary = 0.5) +
             scale_x_continuous(breaks = seq_len(length(run_labels))) +
             labs(
                 title = "Target Gene Conservation across Runs",
-                x     = "Number of runs gene is a direct target",
-                y     = "Gene count"
+                x = "Number of runs gene is a direct target", y = "Gene count"
             ) +
             theme_bw(base_size = 12)
     ),
@@ -223,11 +207,7 @@ if (length(run_labels) >= 2L) {
             ggplot(upset_df, aes(x = runs)) +
                 geom_bar(fill = "#8E44AD") +
                 scale_x_upset(order_by = "freq") +
-                labs(
-                    title = "UpSet: Overlap of Direct p53 Targets",
-                    x     = NULL,
-                    y     = "Gene count"
-                ) +
+                labs(title = "UpSet: Overlap of Direct p53 Targets", x = NULL, y = "Gene count") +
                 theme_bw(base_size = 12) +
                 theme_combmatrix(combmatrix.label.text = element_text(size = 9))
         ),
@@ -239,15 +219,14 @@ if (length(run_labels) >= 2L) {
 if (length(run_labels) >= 2L && length(conserved_targets) > 0L) {
     message("[plots] Heatmap: log2FC of conserved targets")
 
-    lfc_mat <- matrix(
-        NA_real_,
-        nrow = length(conserved_targets),
-        ncol = length(run_labels),
+    lfc_mat <- matrix(NA_real_,
+        nrow = length(conserved_targets), ncol = length(run_labels),
         dimnames = list(conserved_targets, run_labels)
     )
 
     for (run in run_labels) {
-        sub <- targets_long[targets_long$run == run & targets_long$symbol %in% conserved_targets, ]
+        sub <- targets_long[targets_long$run == run &
+            targets_long$symbol %in% conserved_targets, ]
         lfc_mat[sub$symbol, run] <- sub$log2FC
     }
 
@@ -262,8 +241,7 @@ if (length(run_labels) >= 2L && length(conserved_targets) > 0L) {
     )
 
     save_pdf(
-        pheatmap(
-            lfc_mat,
+        pheatmap(lfc_mat,
             annotation_row = row_anno,
             annotation_colors = list(Known_p53 = c(yes = "#F39C12", no = "grey85")),
             color = colorRampPalette(c("#2980B9", "white", "#E74C3C"))(101),
@@ -273,7 +251,8 @@ if (length(run_labels) >= 2L && length(conserved_targets) > 0L) {
             border_color = NA,
             fontsize_row = 8,
             main = sprintf(
-                "log2FC of Conserved p53 Targets (top %d by mean |lfc|)", max_rows
+                "log2FC of Conserved p53 Targets (top %d by mean |lfc|)",
+                max_rows
             ),
             silent = TRUE
         ),
@@ -283,5 +262,5 @@ if (length(run_labels) >= 2L && length(conserved_targets) > 0L) {
     )
 }
 
-message(sprintf("[done] Tables  → %s", out_dir))
-message(sprintf("[done] Figures → %s", fig_dir))
+message(sprintf("[done] Tables  -> %s", out_dir))
+message(sprintf("[done] Figures -> %s", fig_dir))
